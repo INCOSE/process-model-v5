@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html class="frame" lang="en">
+<head>
+	<meta http-equiv="Content-Type" content="text/html;charset=utf-8">
+	<title>Verification report</title>
+
+	<!-- JQUERY -->
+	<script type="text/javascript" src="../../lib/jquery/jquery.min.js"></script>
+	<!-- BOOTSTRAP -->
+	<link type="text/css" rel="stylesheet" href="../../lib/bootstrap/css/bootstrap.min.yeti.css">
+	<script type="text/javascript" src="../../lib/bootstrap/js/bootstrap-3.4.1.min.js"></script>
+	<!-- REPORT SPECIFIC -->
+	<link type="text/css" rel="stylesheet" href="../../css/model.css">
+	<link type="text/css" rel="stylesheet" href="../../css/i18n.css">
+	<script type="text/javascript" src="../../js/frame.js"></script>
+	<script type="text/javascript" src="../../js/imageMapResizer.min.js"></script>
+</head>
+
+<body>
+	<div class="panel panel-default root-panel">
+
+		<div class="panel-heading root-panel-heading">
+            <!-- Name -->
+               <b>Verification report</b>
+
+            <!-- If a View with Viewpoint -->
+			   (<span class="i18n-elementtype-BusinessObject"></span>)
+			   <a class="glyphicon glyphicon-info-sign" id="hint-BusinessObject" target="hint"></a>
+		</div>
+
+		<div class="panel-body root-panel-body">
+		    <!-- If this is a digram model (has children and no bounds) show the image -->
+
+			<div role="tabpanel">
+				<!-- Nav tabs -->
+				<ul class="nav nav-tabs" role="tablist">
+                    <!-- Purpose / Documentation / Content -->
+					   <li role="presentation" class="active"><a href="#documentation" aria-controls="documentation" role="tab" data-toggle="tab" class="i18n-documentation"></a></li>
+
+                    <!-- Properties -->
+                    <li role="presentation"><a href="#properties" aria-controls="properties" role="tab" data-toggle="tab" class="i18n-properties"></a></li>
+
+                    <!-- Analysis -->
+                    	<li role="presentation"><a href="#analysis" aria-controls="analysis" role="tab" data-toggle="tab" class="i18n-analysis"></a></li>
+
+				</ul>
+
+				<!-- Tab panes -->
+				<div class="tab-content">
+					<div role="tabpanel" class="tab-pane active" id="documentation">
+						<div class="convertlinks documentation" style="white-space:pre-wrap">An account prepared for interested parties in order to communicate the status, results, and outcomes of the verification activities.</div>
+					</div>
+					<div role="tabpanel" class="tab-pane" id="properties">
+						<table class="table table-striped table-hover table-condensed">
+							<thead>
+								<tr>
+									<th class="i18n-key"></th>
+									<th class="i18n-value"></th>
+								</tr>
+							</thead>
+							<tbody>
+							</tbody>
+						</table>
+					</div>
+					<div role="tabpanel" class="tab-pane" id="analysis">
+						<table class="table table-striped table-hover table-condensed" id="used-in-views">
+							<thead>
+								<tr><th colspan="2" class="i18n-used-in-views" /></tr>
+								<tr>
+									<th class="i18n-name"></th>
+									<th class="i18n-viewpoint"></th>
+								</tr>
+							</thead>
+							<tbody>
+								<tr id="used-in-views-id-6d43fcaf95b477779a8a9a56f2c97948">
+																	<td><a href="../views/id-6d43fcaf95b477779a8a9a56f2c97948.html" target="view" title="BO_Project Reports"> BO_Project Reports </a></td>
+																	<td><span class="i18n-viewpoint-" /></td>
+																</tr><tr id="used-in-views-id-79072d9bd1a4c9582bcb744f4f225db8">
+																	<td><a href="../views/id-79072d9bd1a4c9582bcb744f4f225db8.html" target="view" title="Validation"> Validation </a></td>
+																	<td><span class="i18n-viewpoint-" /></td>
+																</tr><tr id="used-in-views-id-731dc3818409c3b56b869f7feafae6ce">
+																	<td><a href="../views/id-731dc3818409c3b56b869f7feafae6ce.html" target="view" title="Verification"> Verification </a></td>
+																	<td><span class="i18n-viewpoint-" /></td>
+																</tr><tr id="used-in-views-id-b3185dc95de359a816156a6d5456bc52">
+																	<td><a href="../views/id-b3185dc95de359a816156a6d5456bc52.html" target="view" title="Transition"> Transition </a></td>
+																	<td><span class="i18n-viewpoint-" /></td>
+																</tr>
+							</tbody>
+						</table>
+						<table class="table table-striped table-hover table-condensed" id="model-relations">
+							<thead>
+								<tr><th colspan="4" class="i18n-model-relations" /></tr>
+								<tr>
+									<th class="i18n-name"></th>
+									<th class="i18n-type"></th>
+									<th class="i18n-source"></th>
+									<th class="i18n-target"></th>
+								</tr>
+							</thead>
+							<tbody>
+									<tr>
+											<td><a href="../elements/id-de17095cece3cfea2ad616f1d5ce9af5.html" target="element" title=""></a></td>
+											<td><span class="i18n-elementtype-SpecializationRelationship" /></td>
+											<td><a href="../elements/id-96e2ab92d64e37865db7b8fa7a6cae44.html" target="element"> Verification report</a></td>
+											<td><a href="../elements/id-01a04dc08bd1cf9a9d2f8a22bd882204.html" target="element"> Project reports</a></td>
+										</tr>
+									<tr>
+											<td><a href="../elements/id-a8253a7d6c80eac0f657014a4189fbd6.html" target="element" title=""></a></td>
+											<td><span class="i18n-elementtype-AccessRelationship" /></td>
+											<td><a href="../elements/id-dd6cf1d87fb6df01557c10158b7b0c3a.html" target="element"> Verification</a></td>
+											<td><a href="../elements/id-96e2ab92d64e37865db7b8fa7a6cae44.html" target="element"> Verification report</a></td>
+										</tr><tr>
+											<td><a href="../elements/id-cf2fd5e005c7072b5e567979f15c5c26.html" target="element" title=""></a></td>
+											<td><span class="i18n-elementtype-AccessRelationship" /></td>
+											<td><a href="../elements/id-007aba06ff3513ecad523f57ad41d69b.html" target="element"> Transition</a></td>
+											<td><a href="../elements/id-96e2ab92d64e37865db7b8fa7a6cae44.html" target="element"> Verification report</a></td>
+										</tr><tr>
+											<td><a href="../elements/id-7dc59cebfa8e3d44468605a6be693ff8.html" target="element" title=""></a></td>
+											<td><span class="i18n-elementtype-AccessRelationship" /></td>
+											<td><a href="../elements/id-19c7d399d95318384962182224a27c22.html" target="element"> Validation</a></td>
+											<td><a href="../elements/id-96e2ab92d64e37865db7b8fa7a6cae44.html" target="element"> Verification report</a></td>
+										</tr>
+							</tbody>
+						</table>
+					</div>
+			  </div>
+			</div>
+		</div>
+	</div>
+	<script type="text/javascript">imageMapResize();</script>
+</body>
+</html>
