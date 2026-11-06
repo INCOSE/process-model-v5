@@ -1,0 +1,64 @@
+name: Deploy Pages
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: "pages"
+  cancel-in-progress: false
+
+jobs:
+  build-and-deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+          cache-dependency-path: 'analyzer/package-lock.json'
+
+      - name: Build Vue Analyzer
+        run: |
+          cd analyzer
+          npm ci
+          npm run build
+
+      - name: Assemble Public Site
+        run: |
+          mkdir -p _site
+          # Копируем корневой портал
+          cp index.html _site/
+          
+          # Создаем папку для анализатора и копируем туда содержимое собранного dist
+          mkdir -p _site/analyzer
+          cp -a analyzer/dist/. _site/analyzer/
+          
+          # Копируем статический вьювер Archi
+          cp -r viewer-export _site/viewer-export
+
+      - name: Setup Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload Artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: '_site'
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
