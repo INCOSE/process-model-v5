@@ -46,7 +46,7 @@ export function loadAndParseXML(xmlString, includeEnables = false, includeContro
             if (!gDirect.hasNode(nId)) gDirect.addNode(nId, { name, type: nType, doc });
             
             if (nType.includes('BusinessFunction')) {
-                // Прячем Process Blueprint из списков UI
+                // Exclude Process Blueprint meta-container from UI selection lists
                 if (name !== 'Process Blueprint') {
                     processes[nId] = name;
                 }
@@ -212,7 +212,7 @@ export function loadAndParseXML(xmlString, includeEnables = false, includeContro
             });
         });
 
-        // УНИЧТОЖАЕМ Process Blueprint
+        // Prune Process Blueprint node after projection is complete
         const neighbours = new Set([...gFull.inNeighbors(parent), ...gFull.outNeighbors(parent)]);
         gFull.dropNode(parent);
         if (gDirect.hasNode(parent)) gDirect.dropNode(parent);

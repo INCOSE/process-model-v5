@@ -1,9 +1,32 @@
 <script setup>
-import { computed, watch } from 'vue';
-import { store, graphData } from '../store/graphStore.js';
+import { ref, computed, watch } from 'vue';
+import { store, graphData, applyModelXml, loadDefaultModel } from '../store/graphStore.js';
 import { CaseRegistry, casesList } from '../cases/caseRegistry.js';
 import { graphToMermaidAndData } from '../renderers/mermaidGenerator.js';
 import SearchableSelect from './SearchableSelect.vue';
+
+const customFileInput = ref(null);
+
+const handleCustomFileUpload = (event) => {
+  const file = event.target.files?.[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = (e) => {
+    try {
+      applyModelXml(e.target.result, file.name);
+      store.uiMessage = { text: `Model "${file.name}" loaded successfully!`, type: 'success' };
+    } catch (err) {
+      alert("Error parsing XML! " + err.message);
+      store.uiMessage = { text: `Failed to parse XML: ${err.message}`, type: 'error' };
+    }
+  };
+  reader.readAsText(file);
+  event.target.value = '';
+};
+
+const resetToDefault = async () => {
+  await loadDefaultModel();
+};
 
 // ISO 15288 Process Classification Mapping
 const iso15288Mapping = {
@@ -193,6 +216,42 @@ const exportJson = () => {
 <template>
   <div class="sidebar-content">
     
+    <!-- 0. Model Source -->
+    <div class="section model-section">
+      <div class="model-header">
+        <label class="section-title">Model Source:</label>
+        <span class="status-badge" :class="{ active: store.isLoaded, loading: store.isLoading }">
+          {{ store.isLoading ? 'Loading...' : (store.isLoaded ? 'Active' : 'Not Loaded') }}
+        </span>
+      </div>
+      <div class="model-info">
+        <span class="model-file-name" :title="store.modelName">📄 {{ store.modelName || 'No model loaded' }}</span>
+      </div>
+      <div class="model-buttons">
+        <input 
+          type="file" 
+          ref="customFileInput" 
+          accept=".xml" 
+          @change="handleCustomFileUpload" 
+          style="display: none" 
+        />
+        <button class="model-upload-btn" @click="customFileInput.click()" :disabled="store.isLoading">
+          📂 Load Custom XML
+        </button>
+        <button 
+          v-if="store.modelName !== 'ISO 15288 Converted Model.xml'" 
+          class="model-reset-btn" 
+          @click="resetToDefault" 
+          :disabled="store.isLoading"
+          title="Reset to default model"
+        >
+          🔄 Default
+        </button>
+      </div>
+    </div>
+
+    <hr class="divider" />
+
     <!-- 1. Case Selection -->
     <div class="section">
       <label class="section-title">Select analysis scenario:</label>
@@ -341,4 +400,20 @@ const exportJson = () => {
 .export-json-btn:hover { background: #d0d0d0; }
 .clear-btn { flex: 1; background: #ffebee; color: #c62828; border: 1px solid #ef9a9a; padding: 8px; border-radius: 6px; cursor: pointer; font-weight: 600; font-size: 12px; transition: 0.2s; }
 .clear-btn:hover { background: #ffcdd2; }
+
+/* Model Section Styles */
+.model-section { background: #fdfdfd; padding: 10px; border-radius: 6px; border: 1px solid #e9ecef; }
+.model-header { display: flex; justify-content: space-between; align-items: center; }
+.status-badge { font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 10px; background: #e0e0e0; color: #555; }
+.status-badge.active { background: #d4edda; color: #155724; }
+.status-badge.loading { background: #fff3cd; color: #856404; }
+.model-info { font-size: 12px; color: #495057; font-family: monospace; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; padding: 2px 0; }
+.model-file-name { display: inline-block; max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
+.model-buttons { display: flex; gap: 8px; margin-top: 4px; }
+.model-upload-btn { flex: 1; background: #007bff; color: white; border: none; padding: 6px 10px; border-radius: 4px; font-size: 12px; font-weight: 600; cursor: pointer; transition: background 0.2s; }
+.model-upload-btn:hover:not(:disabled) { background: #0056b3; }
+.model-upload-btn:disabled { background: #cccccc; cursor: not-allowed; }
+.model-reset-btn { background: #6c757d; color: white; border: none; padding: 6px 10px; border-radius: 4px; font-size: 12px; font-weight: 600; cursor: pointer; transition: background 0.2s; }
+.model-reset-btn:hover:not(:disabled) { background: #545b62; }
+.model-reset-btn:disabled { background: #cccccc; cursor: not-allowed; }
 </style>

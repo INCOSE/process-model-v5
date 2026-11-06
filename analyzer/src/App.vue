@@ -1,9 +1,15 @@
 <script setup>
-import { ref } from 'vue';
+import { ref, onMounted } from 'vue';
 import Sidebar from './components/Sidebar.vue';
 import GraphCanvas from './components/GraphCanvas.vue';
+import { loadDefaultModel } from './store/graphStore.js';
 
-// Управление шторкой на мобильных устройствах
+// Auto-load default ISO 15288 model on app startup
+onMounted(async () => {
+  await loadDefaultModel();
+});
+
+// Drawer menu management for mobile screens
 const isMobileMenuOpen = ref(false);
 
 const toggleMenu = () => {
@@ -13,12 +19,12 @@ const toggleMenu = () => {
 
 <template>
   <div class="app-layout">
-    <!-- Кнопка гамбургера для мобильных экранов -->
+    <!-- Hamburger button for mobile screens -->
     <button class="mobile-toggle" @click="toggleMenu">
-      ☰ Настройки
+      ☰ Settings
     </button>
 
-    <!-- Боковая панель (сайдбар) -->
+    <!-- Sidebar navigation and options -->
     <aside :class="['sidebar', { 'is-open': isMobileMenuOpen }]">
       <div class="sidebar-header">
         <h2>ISO 15288 Analyzer</h2>
@@ -27,12 +33,12 @@ const toggleMenu = () => {
       <Sidebar />
     </aside>
 
-    <!-- Основная область с графом -->
+    <!-- Main graph canvas workspace -->
     <main class="canvas-area">
       <GraphCanvas />
     </main>
 
-    <!-- Затемнение фона при открытом меню на телефоне -->
+    <!-- Dimmed backdrop for mobile overlay -->
     <div 
       v-if="isMobileMenuOpen" 
       class="mobile-overlay" 
@@ -42,7 +48,7 @@ const toggleMenu = () => {
 </template>
 
 <style>
-/* Базовые стили приложения (вместо Streamlit CSS) */
+/* Base application layout styles */
 :root {
   --bg-color: #f8f9fa;
   --sidebar-bg: #ffffff;
@@ -56,7 +62,7 @@ body {
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
   background-color: var(--bg-color);
   color: var(--text-main);
-  overflow: hidden; /* Запрещаем скролл всей страницы */
+  overflow: hidden; /* Prevent page-level scroll */
 }
 
 .app-layout {
@@ -123,7 +129,7 @@ body {
   display: none;
 }
 
-/* Адаптивность для экранов меньше 768px */
+/* Responsive layout for mobile screens (< 768px) */
 @media (max-width: 768px) {
   .mobile-toggle { display: block; }
   .close-btn { display: block; }

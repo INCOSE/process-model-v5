@@ -152,7 +152,7 @@ export function graphToMermaidAndData(gActive, nodesToInclude, edgesToInclude, r
                 if (subclass === 'Controls' || relName === 'Controls') label = "Controls";
                 else if (subclass === 'Enables' || relName === 'Enables') label = "Enables";
                 else if (subclass === 'Situational' || relName === 'Situational') {
-                    // Формируем разные подписи в зависимости от направления чтения (Read/Write)
+                    // Assign specific labels depending on access direction (Read / Write)
                     label = access === 'read' ? "Situational Input" : "Situational Output";
                 }
                 else if (access === 'read') label = "Input";
@@ -169,7 +169,7 @@ export function graphToMermaidAndData(gActive, nodesToInclude, edgesToInclude, r
             } else if (eType.includes('Specialization')) {
                 lines.push(`    ${uId} -. "${label}" .-> ${vId}`);
             } else if (["Controls", "Situational Input", "Situational Output", "Enables"].includes(label)) {
-                // Системные связи рисуются пунктиром
+                // Systemic relationships are rendered as dashed lines
                 lines.push(`    ${uId} -.->|${label}| ${vId}`);
             } else {
                 lines.push(`    ${uId} -->|${label}| ${vId}`);

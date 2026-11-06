@@ -5,7 +5,7 @@ import svgPanZoom from 'svg-pan-zoom';
 import { Network } from 'vis-network';
 import ForceGraph3D from '3d-force-graph';
 
-import { store, graphData } from '../store/graphStore.js';
+import { store, graphData, applyModelXml } from '../store/graphStore.js';
 import { loadAndParseXML } from '../core/xmlParser.js';
 import { graphToMermaidAndData } from '../renderers/mermaidGenerator.js';
 
@@ -42,32 +42,20 @@ const showNodeInfo = (rawId) => {
 // Expose to window so Mermaid's SVG can call it
 window.handleNodeClick = showNodeInfo;
 
-// --- FILE UPLOAD & RE-PARSING ---
+// --- FILE UPLOAD ---
 const handleFileUpload = (event) => {
-    const file = event.target.files[0];
+    const file = event.target.files?.[0];
     if (!file) return;
     const reader = new FileReader();
     reader.onload = (e) => {
         try {
-            store.rawXml = e.target.result;
-            const { gFull, gDirect, processes, businessObjects } = loadAndParseXML(store.rawXml, store.settings.includeEnables, store.settings.includeControls, store.settings.includeSituational);
-            graphData.gFull = gFull; graphData.gDirect = gDirect;
-            store.processes = processes; store.businessObjects = businessObjects;
-            store.isLoaded = true;
+            applyModelXml(e.target.result, file.name);
+            store.uiMessage = { text: `Model "${file.name}" loaded successfully!`, type: 'success' };
         } catch (err) { alert("Error parsing XML! " + err.message); }
     };
     reader.readAsText(file);
+    event.target.value = '';
 };
-
-watch(() => [store.settings.includeEnables, store.settings.includeControls, store.settings.includeSituational], () => {
-    if (store.rawXml) {
-        try {
-            const { gFull, gDirect, processes, businessObjects } = loadAndParseXML(store.rawXml, store.settings.includeEnables, store.settings.includeControls, store.settings.includeSituational);
-            graphData.gFull = gFull; graphData.gDirect = gDirect;
-            store.processes = processes; store.businessObjects = businessObjects;
-        } catch (e) { console.error(e); }
-    }
-});
 
 // --- RENDERERS ---
 const renderMermaid = async (payload) => {
@@ -258,10 +246,31 @@ window.addEventListener('resize', () => {
 
 <template>
   <div class="canvas-container">
-    <div v-if="!store.isLoaded" class="upload-overlay">
-        <h3>Upload ArchiMate XML</h3>
+    <!-- Loading Overlay -->
+    <div v-if="store.isLoading" class="status-overlay">
+        <div class="spinner"></div>
+        <h3>Loading ISO 15288 Model...</h3>
+        <p>Parsing ArchiMate graph elements and relationships</p>
+    </div>
+
+    <!-- Fallback Upload Overlay if model failed or missing -->
+    <div v-else-if="!store.isLoaded" class="upload-overlay">
+        <h3>Model Not Loaded</h3>
+        <p v-if="store.loadError" class="overlay-error">{{ store.loadError }}</p>
+        <p v-else>Please choose an ArchiMate Open Exchange XML file.</p>
         <input type="file" accept=".xml" ref="fileInput" @change="handleFileUpload" style="display: none" />
         <button class="upload-btn" @click="fileInput.click()">📁 Choose File</button>
+    </div>
+
+    <!-- Empty State Guide (Model is loaded, no diagram generated yet) -->
+    <div v-else-if="store.renderPayload.nodes.size === 0" class="empty-state">
+        <div class="empty-icon">📐</div>
+        <h3>{{ store.modelName }} Ready</h3>
+        <p>Select an analysis scenario and parameters in the sidebar, then click <strong>"Generate Diagram"</strong>.</p>
+        <div class="model-quick-stats">
+          <span class="stat-pill">Processes: <strong>{{ Object.keys(store.processes).length }}</strong></span>
+          <span class="stat-pill">Business Objects: <strong>{{ Object.keys(store.businessObjects).length }}</strong></span>
+        </div>
     </div>
 
     <!-- Render Targets -->
@@ -335,4 +344,36 @@ window.addEventListener('resize', () => {
 .export-btn:hover { background: #f0f0f0; transform: translateY(-2px); box-shadow: 0 6px 12px rgba(0,0,0,0.15); }
 
 .error-panel { position: absolute; top: 20px; left: 50%; transform: translateX(-50%); background: #ffebee; color: #c62828; padding: 15px 25px; border-radius: 8px; border: 1px solid #ef9a9a; z-index: 1000; max-width: 80%; }
+
+/* Status & Empty State Overlays */
+.status-overlay {
+    position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+    text-align: center; background: white; padding: 40px 50px; border-radius: 12px;
+    box-shadow: 0 10px 25px rgba(0,0,0,0.08); border: 1px solid #e0e0e0; z-index: 10;
+}
+.status-overlay h3 { margin: 15px 0 5px 0; color: #333; font-size: 1.1rem; }
+.status-overlay p { margin: 0; color: #777; font-size: 0.9rem; }
+
+.spinner {
+    width: 40px; height: 40px; margin: 0 auto 10px auto;
+    border: 3px solid #e0e0e0; border-top: 3px solid #007bff;
+    border-radius: 50%; animation: spin 1s linear infinite;
+}
+@keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+
+.overlay-error { color: #d32f2f; font-size: 0.9rem; margin: 10px 0; }
+
+.empty-state {
+    position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+    text-align: center; max-width: 480px; padding: 40px 30px;
+    background: #fafafa; border: 2px dashed #d0d7de; border-radius: 12px;
+}
+.empty-icon { font-size: 48px; margin-bottom: 12px; }
+.empty-state h3 { margin: 0 0 10px 0; color: #24292f; font-size: 1.2rem; }
+.empty-state p { margin: 0 0 20px 0; color: #57606a; font-size: 0.95rem; line-height: 1.5; }
+.model-quick-stats { display: flex; justify-content: center; gap: 15px; }
+.stat-pill {
+    background: #ffffff; border: 1px solid #d0d7de; padding: 6px 14px;
+    border-radius: 20px; font-size: 0.85rem; color: #444; box-shadow: 0 1px 3px rgba(0,0,0,0.04);
+}
 </style>
