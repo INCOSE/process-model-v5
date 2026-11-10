@@ -31,7 +31,18 @@ export const Case7 = {
 
         const nodesToDraw = new Set([pCenter]);
         let edgesToDraw = [];
+        const addedEdges = new Set();
         const customLabels = {};
+
+        // Helper: Safely push unique edges while filtering out synthetic reverse hierarchy edges
+        const pushUniqueEdge = (u, v, data) => {
+            if (!data || data.access === 'hierarchy_reverse') return;
+            const edgeKey = `${u}___${v}`;
+            if (!addedEdges.has(edgeKey)) {
+                edgesToDraw.push({ u, v, data });
+                addedEdges.add(edgeKey);
+            }
+        };
 
         // Helper: Collect cluster of artifacts (Whole-Part, Specialisation)
         const getArtifactCluster = (startNode) => {
@@ -70,11 +81,13 @@ export const Case7 = {
             return visited;
         };
 
+        // Independent checks preserve bidirectional (Read + Write) relationships on the same artifact
         const safeAddEdge = (u, v) => {
-            if (gActive.hasDirectedEdge(u, v) && gActive.getDirectedEdgeAttribute(u, v, 'access') !== 'hierarchy_reverse') {
-                edgesToDraw.push({ u, v, data: gActive.getDirectedEdgeAttributes(u, v) });
-            } else if (gActive.hasDirectedEdge(v, u) && gActive.getDirectedEdgeAttribute(v, u, 'access') !== 'hierarchy_reverse') {
-                edgesToDraw.push({ u: v, v: u, data: gActive.getDirectedEdgeAttributes(v, u) });
+            if (gActive.hasDirectedEdge(u, v)) {
+                pushUniqueEdge(u, v, gActive.getDirectedEdgeAttributes(u, v));
+            }
+            if (gActive.hasDirectedEdge(v, u)) {
+                pushUniqueEdge(v, u, gActive.getDirectedEdgeAttributes(v, u));
             }
         };
 
@@ -86,8 +99,8 @@ export const Case7 = {
             // Connect cluster internals
             cluster.forEach(u => {
                 cluster.forEach(v => {
-                    if (gActive.hasDirectedEdge(u, v) && gActive.getDirectedEdgeAttribute(u, v, 'access') !== 'hierarchy_reverse') {
-                        edgesToDraw.push({ u, v, data: gActive.getDirectedEdgeAttributes(u, v) });
+                    if (gActive.hasDirectedEdge(u, v)) {
+                        pushUniqueEdge(u, v, gActive.getDirectedEdgeAttributes(u, v));
                     }
                 });
             });
@@ -101,7 +114,7 @@ export const Case7 = {
                     if ((pType.includes('BusinessFunction') || pType.includes('BusinessProcess')) && source !== pCenter) {
                         if (attr.access !== 'hierarchy_reverse') {
                             nodesToDraw.add(source);
-                            edgesToDraw.push({ u: source, v: cItem, data: attr });
+                            pushUniqueEdge(source, cItem, attr);
                         }
                     }
                 });
@@ -113,10 +126,11 @@ export const Case7 = {
             const cluster = getArtifactCluster(outId);
             cluster.forEach(n => nodesToDraw.add(n));
             
+            // Connect cluster internals
             cluster.forEach(u => {
                 cluster.forEach(v => {
-                    if (gActive.hasDirectedEdge(u, v) && gActive.getDirectedEdgeAttribute(u, v, 'access') !== 'hierarchy_reverse') {
-                        edgesToDraw.push({ u, v, data: gActive.getDirectedEdgeAttributes(u, v) });
+                    if (gActive.hasDirectedEdge(u, v)) {
+                        pushUniqueEdge(u, v, gActive.getDirectedEdgeAttributes(u, v));
                     }
                 });
             });
@@ -143,7 +157,7 @@ export const Case7 = {
                         const pType = gFull.getNodeAttribute(source, 'type') || '';
                         if ((pType.includes('BusinessFunction') || pType.includes('BusinessProcess')) && attr.access !== 'hierarchy_reverse' && source !== pCenter) {
                             nodesToDraw.add(source);
-                            edgesToDraw.push({ u: source, v: cItem, data: attr });
+                            pushUniqueEdge(source, cItem, attr);
                         }
                     });
                 });
@@ -153,9 +167,9 @@ export const Case7 = {
             cluster.forEach(cItem => {
                 gFull.forEachOutEdge(cItem, (edge, attr, source, target) => {
                     const sType = gFull.getNodeAttribute(target, 'type') || '';
-                    if ((sType.includes('BusinessFunction') || sType.includes('BusinessProcess')) && target !== pCenter) {
+                    if ((sType.includes('BusinessFunction') || sType.includes('BusinessProcess')) && attr.access !== 'hierarchy_reverse' && target !== pCenter) {
                         nodesToDraw.add(target);
-                        edgesToDraw.push({ u: cItem, v: target, data: attr });
+                        pushUniqueEdge(cItem, target, attr);
                     }
                 });
             });

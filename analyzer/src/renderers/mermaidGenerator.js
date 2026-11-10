@@ -26,6 +26,7 @@ export function graphToMermaidAndData(gActive, nodesToInclude, edgesToInclude, r
             const uType = gActive.getNodeAttribute(u, 'type') || '';
             const vType = gActive.getNodeAttribute(v, 'type') || '';
             
+            // Группируем в subgraph только те Composition, которые явно помечены флагом isSubgraphEdge (или исходят от центрального узла)
             if (data.type?.includes('Composition') && uType.includes('BusinessFunction') && vType.includes('BusinessProcess')) {
                 parentMap[v] = u;
             } else {

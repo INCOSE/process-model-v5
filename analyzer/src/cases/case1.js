@@ -58,7 +58,7 @@ export const Case1 = {
          * Custom DFS to find all simple paths up to a specific cutoff, ignoring direction.
          * Simulates nx.all_simple_paths on an undirected graph.
          */
-        const findAllSimplePaths = (source, target, maxDepth) => {
+        const findDirectedExchangePaths = (source, target, maxDepth) => {
             const paths = [];
             const visited = new Set();
 
@@ -71,13 +71,20 @@ export const Case1 = {
                 
                 visited.add(currentNode);
                 
-                // forEachNeighbor iterates over both incoming and outgoing edges in Graphology
-                gActive.forEachNeighbor(currentNode, (neighbor) => {
-                    if (!visited.has(neighbor)) {
-                        currentPath.push(neighbor);
-                        dfs(neighbor, currentPath);
-                        currentPath.pop();
+                gActive.forEachOutEdge(currentNode, (edge, attr, u, neighbor) => {
+                    if (visited.has(neighbor)) return;
+
+                    // Промежуточными узлами между p1 и p2 могут быть только бизнес-объекты (не процессы)
+                    if (neighbor !== target) {
+                        const nType = gActive.getNodeAttribute(neighbor, 'type') || '';
+                        if (nType.includes('BusinessProcess') || nType.includes('BusinessFunction')) {
+                            return;
+                        }
                     }
+
+                    currentPath.push(neighbor);
+                    dfs(neighbor, currentPath);
+                    currentPath.pop();
                 });
                 
                 visited.delete(currentNode);
@@ -98,7 +105,10 @@ export const Case1 = {
                 safeAddEdge(p2, p1);
 
                 // Find connecting paths
-                const paths = findAllSimplePaths(p1, p2, cutoff);
+                const paths = [
+                    ...findDirectedExchangePaths(p1, p2, cutoff),
+                    ...findDirectedExchangePaths(p2, p1, cutoff)
+                ];
                 
                 paths.forEach(path => {
                     if (path.length > 2) {

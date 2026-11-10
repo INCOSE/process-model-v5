@@ -86,9 +86,13 @@ export const Case5 = {
         nodesToDraw.forEach(u => {
             nodesToDraw.forEach(v => {
                 if (gActive.hasDirectedEdge(u, v) && gActive.getDirectedEdgeAttribute(u, v, 'access') !== 'hierarchy_reverse') {
+                    const attr = gActive.getDirectedEdgeAttributes(u, v);
+                    // Игнорируем Composition чужих функций, чтобы в subgraph рендерился только p1
+                    if (attr.type?.includes('Composition') && u !== p1) return;
+
                     const edgeKey = `${u}___${v}`;
                     if (!existingEdges.has(edgeKey)) {
-                        edgesToDraw.push({ u, v, data: gActive.getDirectedEdgeAttributes(u, v) });
+                        edgesToDraw.push({ u, v, data: attr });
                         existingEdges.add(edgeKey);
                     }
                 }

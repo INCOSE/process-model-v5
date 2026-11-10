@@ -148,12 +148,19 @@ export function loadAndParseXML(xmlString, includeEnables = false, includeContro
         if (!gFull.hasNode(src) || !gFull.hasNode(tgt)) return;
             
         if (rType.includes('Access')) {
-            if (access.toLowerCase() === 'read') {
-                gFull.mergeDirectedEdge(tgt, src, { type: rType, access, name: relName, subclass });
-                gDirect.mergeDirectedEdge(tgt, src, { type: rType, access, name: relName, subclass });
+            const acc = access.toLowerCase();
+            if (acc === 'read') {
+                gFull.mergeDirectedEdge(tgt, src, { type: rType, access: 'Read', name: relName, subclass });
+                gDirect.mergeDirectedEdge(tgt, src, { type: rType, access: 'Read', name: relName, subclass });
+            } else if (acc === 'readwrite') {
+                // ReadWrite создаёт как входящий поток (Read), так и исходящий (Write)
+                gFull.mergeDirectedEdge(tgt, src, { type: rType, access: 'Read', name: relName, subclass });
+                gDirect.mergeDirectedEdge(tgt, src, { type: rType, access: 'Read', name: relName, subclass });
+                gFull.mergeDirectedEdge(src, tgt, { type: rType, access: 'Write', name: relName, subclass });
+                gDirect.mergeDirectedEdge(src, tgt, { type: rType, access: 'Write', name: relName, subclass });
             } else {
-                gFull.mergeDirectedEdge(src, tgt, { type: rType, access, name: relName, subclass });
-                gDirect.mergeDirectedEdge(src, tgt, { type: rType, access, name: relName, subclass });
+                gFull.mergeDirectedEdge(src, tgt, { type: rType, access: access || 'Write', name: relName, subclass });
+                gDirect.mergeDirectedEdge(src, tgt, { type: rType, access: access || 'Write', name: relName, subclass });
             }
         } else {
             gFull.mergeDirectedEdge(src, tgt, { type: rType, access, name: relName, subclass });
@@ -161,7 +168,8 @@ export function loadAndParseXML(xmlString, includeEnables = false, includeContro
             const isHierarchy = ['Composition', 'Aggregation', 'Specialization'].some(x => rType.includes(x));
             if (!isHierarchy) {
                 gDirect.mergeDirectedEdge(src, tgt, { type: rType, access, name: relName, subclass });
-            } else {
+            } else if (!gFull.hasDirectedEdge(tgt, src)) {
+                // Добавляем техническое обратное ребро только если нет реального направленного ребра
                 gFull.mergeDirectedEdge(tgt, src, { type: rType, access: 'hierarchy_reverse', name: relName, subclass });
             }
         }
