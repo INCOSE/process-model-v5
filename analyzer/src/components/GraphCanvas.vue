@@ -61,20 +61,40 @@ const handleFileUpload = (event) => {
 const renderMermaid = async (payload) => {
     if (panZoomInstance) { panZoomInstance.destroy(); panZoomInstance = null; }
     mermaidDiv.value.innerHTML = '';
-    const { mermaidCode } = graphToMermaidAndData(graphData.gActive(), payload.nodes, payload.edges, payload.renderSubgraphs, payload.customLabels);
+    
+    // Pass highlightedNodes to Mermaid generator
+    const { mermaidCode } = graphToMermaidAndData(
+        graphData.gActive(), 
+        payload.nodes, 
+        payload.edges, 
+        payload.renderSubgraphs, 
+        payload.customLabels,
+        payload.highlightedNodes // <--- New addition
+    );
     if (!mermaidCode) return;
 
     try {
         const { svg } = await mermaid.render('mermaid-svg-element', mermaidCode);
         mermaidDiv.value.innerHTML = svg;
         const svgElement = mermaidDiv.value.querySelector('svg');
+        
+        // Patch Mermaid SVG to replace circle markers with real diamond polygons
+        const markers = svgElement.querySelectorAll('marker');
+        markers.forEach(marker => {
+            if (marker.id.includes('aggregationStart') || marker.id.includes('aggregationEnd')) {
+                marker.innerHTML = '<polygon points="0,5 5,0 10,5 5,10" style="fill:white;stroke:#333;stroke-width:1" />';
+            } else if (marker.id.includes('compositionStart') || marker.id.includes('compositionEnd')) {
+                marker.innerHTML = '<polygon points="0,5 5,0 10,5 5,10" style="fill:#333;stroke:#333;stroke-width:1" />';
+            }
+        });
+
         svgElement.style.width = "100%"; svgElement.style.height = "100%";
         panZoomInstance = svgPanZoom(svgElement, { 
             zoomEnabled: true, 
             controlIconsEnabled: false, 
             fit: true, 
             center: true,
-            preventMouseEventsDefault: false // <--- allows click on nodes
+            preventMouseEventsDefault: false
         });
     } catch (error) { errorContent.value = error.message; }
 };
@@ -86,12 +106,18 @@ const renderVisJs = (payload) => {
     const nodes = Array.from(payload.nodes).map(id => {
         const type = gActive.getNodeAttribute(id, 'type') || '';
         const isProc = type.includes('BusinessFunction') || type.includes('BusinessProcess');
+        const isHighlighted = payload.highlightedNodes && payload.highlightedNodes.has(id);
+        
         return {
             id,
             label: payload.customLabels[id] || gActive.getNodeAttribute(id, 'name') || 'Unknown',
             shape: isProc ? 'box' : 'ellipse',
-            color: isProc ? { background: '#FFF2CC', border: '#D6B656' } : { background: '#D5E8D4', border: '#82B366' },
-            font: { face: 'sans-serif', size: 14 }
+            // Highlight styling for central process
+            color: isHighlighted 
+                ? { background: '#FFE6CC', border: '#D79B00' }
+                : (isProc ? { background: '#FFF2CC', border: '#D6B656' } : { background: '#D5E8D4', border: '#82B366' }),
+            font: { face: 'sans-serif', size: isHighlighted ? 16 : 14, bold: isHighlighted },
+            borderWidth: isHighlighted ? 3 : 1
         };
     });
 
@@ -120,10 +146,9 @@ const renderVisJs = (payload) => {
         layout: { hierarchical: { enabled: payload.renderSubgraphs, direction: 'UD', sortMethod: 'directed' } }
     });
 
-    // Add click event for Vis.js
     visNetworkInstance.on("click", function (params) {
         if (params.nodes.length > 0) showNodeInfo(params.nodes[0]);
-        else selectedNodeInfo.value = null; // Click outside clears panel
+        else selectedNodeInfo.value = null; 
     });
 };
 
@@ -134,22 +159,54 @@ const render3D = (payload) => {
     const nodes = Array.from(payload.nodes).map(id => {
         const type = gActive.getNodeAttribute(id, 'type') || '';
         const isProc = type.includes('BusinessFunction') || type.includes('BusinessProcess');
+        const isHighlighted = payload.highlightedNodes && payload.highlightedNodes.has(id);
+        
         return {
-            id, name: payload.customLabels[id] || gActive.getNodeAttribute(id, 'name') || 'Unknown',
-            val: isProc ? 20 : 10, color: isProc ? '#D6B656' : '#82B366'
+            id, 
+            name: payload.customLabels[id] || gActive.getNodeAttribute(id, 'name') || 'Unknown',
+            val: isHighlighted ? 35 : (isProc ? 20 : 10), 
+            color: isHighlighted ? '#D79B00' : (isProc ? '#D6B656' : '#82B366'),
+            isHighlighted
         };
     });
 
     const links = payload.edges.map(e => ({ source: e.u, target: e.v, name: e.data.name || e.data.type }));
 
     threeGraphInstance = ForceGraph3D()(threeDiv.value)
-        .width(threeDiv.value.clientWidth)  // container width
-        .height(threeDiv.value.clientHeight) // container height
+        .width(threeDiv.value.clientWidth)
+        .height(threeDiv.value.clientHeight)
         .graphData({ nodes, links })
         .backgroundColor('#ffffff')
-        .nodeLabel('name')
         .nodeColor('color')
         .nodeVal('val')
+        // Constant 2D text label above the 3D node
+        .nodeThreeObjectExtend(true)
+        .nodeThreeObject(node => {
+            const canvas = document.createElement('canvas');
+            const context = canvas.getContext('2d');
+            context.font = `${node.isHighlighted ? 'bold ' : ''}24px Sans-Serif`;
+            const textWidth = context.measureText(node.name).width;
+            canvas.width = textWidth + 10;
+            canvas.height = 30;
+            context.font = `${node.isHighlighted ? 'bold ' : ''}24px Sans-Serif`;
+            context.fillStyle = node.isHighlighted ? '#D79B00' : 'rgba(80, 80, 80, 0.9)';
+            context.textAlign = 'center';
+            context.textBaseline = 'middle';
+            context.fillText(node.name, canvas.width / 2, canvas.height / 2);
+            
+            // eslint-disable-next-line no-undef
+            const texture = new THREE.CanvasTexture(canvas);
+            texture.minFilter = THREE.LinearFilter;
+            // eslint-disable-next-line no-undef
+            const spriteMaterial = new THREE.SpriteMaterial({ map: texture, depthTest: false });
+            // eslint-disable-next-line no-undef
+            const sprite = new THREE.Sprite(spriteMaterial);
+            
+            const scale = node.isHighlighted ? 0.3 : 0.2;
+            sprite.scale.set(canvas.width * scale, canvas.height * scale, 1);
+            sprite.position.set(0, node.isHighlighted ? 15 : 10, 0); // Position above node
+            return sprite;
+        })
         .linkColor(() => '#a0a0a0')
         .linkDirectionalArrowLength(4)
         .linkDirectionalArrowRelPos(1)

@@ -4,7 +4,14 @@
  * Note: Comments are written in British English.
  */
 
-export function graphToMermaidAndData(gActive, nodesToInclude, edgesToInclude, renderSubgraphs = false, customLabels = {}) {
+export function graphToMermaidAndData(
+    gActive,
+    nodesToInclude,
+    edgesToInclude,
+    renderSubgraphs = false,
+    customLabels = {},
+    highlightedNodes = new Set()
+) {
     if (!nodesToInclude || nodesToInclude.size === 0) {
         return { mermaidCode: "", nodesData: {} };
     }
@@ -12,6 +19,7 @@ export function graphToMermaidAndData(gActive, nodesToInclude, edgesToInclude, r
     const lines = [
         "flowchart LR",
         "classDef process fill:#FFF2CC,stroke:#D6B656,stroke-width:2px,color:#000;",
+        "classDef centralProcess fill:#FFE6CC,stroke:#D79B00,stroke-width:4px,color:#000,font-weight:bold;",
         "classDef object fill:#D5E8D4,stroke:#82B366,stroke-width:2px,color:#000;"
     ];
 
@@ -26,7 +34,6 @@ export function graphToMermaidAndData(gActive, nodesToInclude, edgesToInclude, r
             const uType = gActive.getNodeAttribute(u, 'type') || '';
             const vType = gActive.getNodeAttribute(v, 'type') || '';
             
-            // Группируем в subgraph только те Composition, которые явно помечены флагом isSubgraphEdge (или исходят от центрального узла)
             if (data.type?.includes('Composition') && uType.includes('BusinessFunction') && vType.includes('BusinessProcess')) {
                 parentMap[v] = u;
             } else {
@@ -67,10 +74,15 @@ export function graphToMermaidAndData(gActive, nodesToInclude, edgesToInclude, r
             const pName = pNameRaw.replace(/["']/g, "'");
             const mPid = pId.replace(/-/g, "_");
             const pDoc = (gActive.getNodeAttribute(pId, 'doc') || '').replace(/["']/g, "'").replace(/\n/g, " ");
+            const isHighlighted = highlightedNodes && highlightedNodes.has(pId);
 
             lines.push(`    subgraph ${mPid} ["${pName}"]`);
             lines.push(`        direction TB`);
-            lines.push(`        style ${mPid} fill:#FFF2CC,stroke:#D6B656,stroke-width:2px,color:#000;`);
+            if (isHighlighted) {
+                lines.push(`        style ${mPid} fill:#FFE6CC,stroke:#D79B00,stroke-width:4px,color:#000,font-weight:bold;`);
+            } else {
+                lines.push(`        style ${mPid} fill:#FFF2CC,stroke:#D6B656,stroke-width:2px,color:#000;`);
+            }
 
             let prevCid = null;
             children.forEach(cId => {
@@ -105,9 +117,12 @@ export function graphToMermaidAndData(gActive, nodesToInclude, edgesToInclude, r
         const mId = nId.replace(/-/g, "_");
         const nType = gActive.getNodeAttribute(nId, 'type') || '';
         const doc = (gActive.getNodeAttribute(nId, 'doc') || '').replace(/["']/g, "'").replace(/\n/g, " ");
+        const isHighlighted = highlightedNodes && highlightedNodes.has(nId);
 
         if (nType.includes('BusinessProcess') || nType.includes('BusinessFunction')) {
-            lines.push(`    ${mId}("${name}"):::process`);
+            const pClass = isHighlighted ? 'centralProcess' : 'process';
+            const displayLabel = isHighlighted ? `★ ${name}` : name;
+            lines.push(`    ${mId}("${displayLabel}"):::${pClass}`);
         } else {
             lines.push(`    ${mId}["${name}"]:::object`);
         }
@@ -164,9 +179,11 @@ export function graphToMermaidAndData(gActive, nodesToInclude, edgesToInclude, r
             }
 
             if (eType.includes('Composition')) {
-                lines.push(`    ${vId} == "${label}" ==> ${uId}`);
+                // uId is Whole (parent), vId is Part (child). Filled diamond (◆) at parent end.
+                lines.push(`    ${vId} ===|"${label} ◆"| ${uId}`);
             } else if (eType.includes('Aggregation')) {
-                lines.push(`    ${vId} -- "${label}" --o ${uId}`);
+                // uId is Whole (parent), vId is Part (child). Hollow diamond (◇) at parent end.
+                lines.push(`    ${vId} ---|"${label} ◇"| ${uId}`);
             } else if (eType.includes('Specialization')) {
                 lines.push(`    ${uId} -. "${label}" .-> ${vId}`);
             } else if (["Controls", "Situational Input", "Situational Output", "Enables"].includes(label)) {

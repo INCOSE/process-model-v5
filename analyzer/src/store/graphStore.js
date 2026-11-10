@@ -30,6 +30,7 @@ export const store = reactive({
   renderPayload: {
     nodes: new Set(),
     edges: [],
+    highlightedNodes: new Set(), // <--- Добавить это
     renderSubgraphs: false,
     customLabels: {}
   }

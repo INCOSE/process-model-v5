@@ -30,6 +30,7 @@ export const Case7 = {
         const showAllProducers = params.showAllProducers || false;
 
         const nodesToDraw = new Set([pCenter]);
+        const highlightedNodes = new Set([pCenter]); // Explicitly mark central process
         let edgesToDraw = [];
         const addedEdges = new Set();
         const customLabels = {};
@@ -182,7 +183,8 @@ export const Case7 = {
         return {
             nodes: nodesToDraw,
             edges: edgesToDraw,
-            customLabels: customLabels, // Specifically passed for N2 Chart
+            highlightedNodes: highlightedNodes, // Specifically passed for visual rendering
+            customLabels: customLabels, 
             success: true,
             message: "N2 Chart simulation diagram compiled!"
         };

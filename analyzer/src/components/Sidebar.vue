@@ -167,6 +167,7 @@ const runAnalysis = () => {
   store.renderPayload = {
     nodes: result.nodes,
     edges: result.edges,
+    highlightedNodes: result.highlightedNodes || new Set(), // <--- Добавить это
     renderSubgraphs: result.renderSubgraphs || false,
     customLabels: result.customLabels || {}
   };
