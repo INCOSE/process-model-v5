@@ -4,6 +4,7 @@ import mermaid from 'mermaid';
 import svgPanZoom from 'svg-pan-zoom';
 import { Network } from 'vis-network';
 import ForceGraph3D from '3d-force-graph';
+import * as THREE from 'three';
 
 import { store, graphData, applyModelXml } from '../store/graphStore.js';
 import { loadAndParseXML } from '../core/xmlParser.js';
