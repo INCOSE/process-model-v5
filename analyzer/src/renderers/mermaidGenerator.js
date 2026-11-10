@@ -179,11 +179,9 @@ export function graphToMermaidAndData(
             }
 
             if (eType.includes('Composition')) {
-                // uId is Whole (parent), vId is Part (child). Filled diamond (◆) at parent end.
-                lines.push(`    ${vId} ===|"${label} ◆"| ${uId}`);
+                lines.push(`    ${vId} == "${label}" ==> ${uId}`);
             } else if (eType.includes('Aggregation')) {
-                // uId is Whole (parent), vId is Part (child). Hollow diamond (◇) at parent end.
-                lines.push(`    ${vId} ---|"${label} ◇"| ${uId}`);
+                lines.push(`    ${vId} -- "${label}" --o ${uId}`);
             } else if (eType.includes('Specialization')) {
                 lines.push(`    ${uId} -. "${label}" .-> ${vId}`);
             } else if (["Controls", "Situational Input", "Situational Output", "Enables"].includes(label)) {

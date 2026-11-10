@@ -69,7 +69,7 @@ const renderMermaid = async (payload) => {
         payload.edges, 
         payload.renderSubgraphs, 
         payload.customLabels,
-        payload.highlightedNodes // <--- New addition
+        payload.highlightedNodes
     );
     if (!mermaidCode) return;
 
@@ -78,16 +78,6 @@ const renderMermaid = async (payload) => {
         mermaidDiv.value.innerHTML = svg;
         const svgElement = mermaidDiv.value.querySelector('svg');
         
-        // Patch Mermaid SVG to replace circle markers with real diamond polygons
-        const markers = svgElement.querySelectorAll('marker');
-        markers.forEach(marker => {
-            if (marker.id.includes('aggregationStart') || marker.id.includes('aggregationEnd')) {
-                marker.innerHTML = '<polygon points="0,5 5,0 10,5 5,10" style="fill:white;stroke:#333;stroke-width:1" />';
-            } else if (marker.id.includes('compositionStart') || marker.id.includes('compositionEnd')) {
-                marker.innerHTML = '<polygon points="0,5 5,0 10,5 5,10" style="fill:#333;stroke:#333;stroke-width:1" />';
-            }
-        });
-
         svgElement.style.width = "100%"; svgElement.style.height = "100%";
         panZoomInstance = svgPanZoom(svgElement, { 
             zoomEnabled: true, 
