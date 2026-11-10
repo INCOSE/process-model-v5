@@ -63,7 +63,6 @@ const renderMermaid = async (payload) => {
     if (panZoomInstance) { panZoomInstance.destroy(); panZoomInstance = null; }
     mermaidDiv.value.innerHTML = '';
     
-    // Pass highlightedNodes to Mermaid generator
     const { mermaidCode } = graphToMermaidAndData(
         graphData.gActive(), 
         payload.nodes, 
@@ -75,19 +74,30 @@ const renderMermaid = async (payload) => {
     if (!mermaidCode) return;
 
     try {
-        const { svg } = await mermaid.render('mermaid-svg-element', mermaidCode);
+        // 1. Захватываем не только svg, но и функцию bindFunctions
+        const { svg, bindFunctions } = await mermaid.render('mermaid-svg-element', mermaidCode);
+        
         mermaidDiv.value.innerHTML = svg;
         const svgElement = mermaidDiv.value.querySelector('svg');
         
-        svgElement.style.width = "100%"; svgElement.style.height = "100%";
+        // 2. Инициализируем обработчики кликов Mermaid
+        if (bindFunctions) {
+            bindFunctions(mermaidDiv.value);
+        }
+        
+        svgElement.style.width = "100%"; 
+        svgElement.style.height = "100%";
+        
         panZoomInstance = svgPanZoom(svgElement, { 
             zoomEnabled: true, 
             controlIconsEnabled: false, 
             fit: true, 
             center: true,
-            preventMouseEventsDefault: false
+            preventMouseEventsDefault: false // Разрешает прохождение кликов до SVG
         });
-    } catch (error) { errorContent.value = error.message; }
+    } catch (error) { 
+        errorContent.value = error.message; 
+    }
 };
 
 const renderVisJs = (payload) => {
