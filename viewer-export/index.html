@@ -3450,5 +3450,15 @@
 		</div>
 	</div>
 	<!-- END HINT MODAL DIALOG -->
+		<!-- AUTO-EXPAND VIEWS -->
+	<script type="text/javascript">
+		$(document).ready(function() {
+			// Find Views container and expand it by default
+			var $viewsFolder = $('li.tree-folder span.i18n-views');
+			if ($viewsFolder.length) {
+				$viewsFolder.trigger('click');
+			}
+		});
+	</script>
 </body>
 </html>
