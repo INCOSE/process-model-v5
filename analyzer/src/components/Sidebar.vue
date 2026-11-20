@@ -13,6 +13,13 @@ import { iso15288Mapping } from '../core/iso15288Groups.js';
 import SearchableSelect from './SearchableSelect.vue';
 
 const customFileInput = ref(null);
+const isGlobalSettingsOpen = ref(true);
+
+const globalSettingsSummary = computed(() => {
+  const s = store.settings;
+  const metaCount = [s.includeEnables, s.includeControls, s.includeSituational].filter(Boolean).length;
+  return `${s.useHierarchy ? 'Hierarchy' : 'Direct'} · Meta ${metaCount}/3`;
+});
 
 const handleCustomFileUpload = (event) => {
   const file = event.target.files?.[0];
@@ -190,35 +197,48 @@ const exportJson = () => {
 
     <hr class="divider" />
 
-    <!-- 2. Global Model Settings (Always visible — applies to Graphs, N2 Matrix, Checklist & Hotspots) -->
-    <div class="section global-settings-box">
-      <div class="section-header-row">
-        <label class="section-title">Global Model Settings</label>
-        <span class="scope-hint" title="Applies across Scenario Graphs, N2 Matrix, Checklist, and Hotspots">All views</span>
+    <!-- 2. Global Model Settings (Collapsible — applies across all views) -->
+    <div class="section global-settings-box" :class="{ collapsed: !isGlobalSettingsOpen }">
+      <button
+        type="button"
+        class="collapse-header"
+        @click="isGlobalSettingsOpen = !isGlobalSettingsOpen"
+        :aria-expanded="isGlobalSettingsOpen"
+        title="Applies across Scenario Graphs, N2 Matrix, Checklist, and Hotspots"
+      >
+        <span class="collapse-title-group">
+          <span class="chevron">{{ isGlobalSettingsOpen ? '▼' : '▶' }}</span>
+          <span class="section-title">Global Model Settings</span>
+        </span>
+        <span class="scope-hint">
+          {{ isGlobalSettingsOpen ? 'All views' : globalSettingsSummary }}
+        </span>
+      </button>
+
+      <div v-show="isGlobalSettingsOpen" class="global-settings-body">
+        <label class="checkbox-label">
+          <input type="checkbox" v-model="store.settings.useHierarchy" />
+          Include derived connections (Hierarchy)
+        </label>
+        <label class="checkbox-label">
+          <input type="checkbox" v-model="store.settings.connectBorderObjects" />
+          Show relations between boundary objects
+        </label>
+
+        <label class="sub-title">Meta-Level Inheritance</label>
+        <label class="checkbox-label">
+          <input type="checkbox" v-model="store.settings.includeEnables" />
+          Inherit Enables
+        </label>
+        <label class="checkbox-label">
+          <input type="checkbox" v-model="store.settings.includeControls" />
+          Inherit Controls
+        </label>
+        <label class="checkbox-label">
+          <input type="checkbox" v-model="store.settings.includeSituational" />
+          Inherit Situational Input/Output
+        </label>
       </div>
-
-      <label class="checkbox-label">
-        <input type="checkbox" v-model="store.settings.useHierarchy" />
-        Include derived connections (Hierarchy)
-      </label>
-      <label class="checkbox-label">
-        <input type="checkbox" v-model="store.settings.connectBorderObjects" />
-        Show relations between boundary objects
-      </label>
-
-      <label class="sub-title">Meta-Level Inheritance</label>
-      <label class="checkbox-label">
-        <input type="checkbox" v-model="store.settings.includeEnables" />
-        Inherit Enables
-      </label>
-      <label class="checkbox-label">
-        <input type="checkbox" v-model="store.settings.includeControls" />
-        Inherit Controls
-      </label>
-      <label class="checkbox-label">
-        <input type="checkbox" v-model="store.settings.includeSituational" />
-        Inherit Situational Input/Output
-      </label>
     </div>
 
     <hr class="divider" />
@@ -317,17 +337,61 @@ const exportJson = () => {
 .section { display: flex; flex-direction: column; gap: 10px; }
 .section-header-row { display: flex; justify-content: space-between; align-items: center; }
 .section-title { font-weight: 700; font-size: 0.88rem; color: #334155; }
-.sub-title { font-weight: 600; font-size: 0.8rem; color: #64748b; margin-top: 6px; display: block; }
+.sub-title { font-weight: 600; font-size: 0.8rem; color: #64748b; margin-top: 4px; display: block; }
 .scope-hint {
   font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.3px;
   padding: 2px 7px; border-radius: 10px; background: #eef2f6; color: #64748b;
+  white-space: nowrap;
 }
 
 .global-settings-box {
   background: #f8fafc;
   border: 1px solid #e2e8f0;
   border-radius: 6px;
-  padding: 12px;
+  padding: 10px 12px;
+  gap: 0;
+}
+.global-settings-box.collapsed {
+  padding: 8px 12px;
+}
+
+.collapse-header {
+  width: 100%;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  text-align: left;
+  font-family: inherit;
+}
+.collapse-header:hover .section-title {
+  color: #0f172a;
+}
+.collapse-title-group {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.chevron {
+  font-size: 10px;
+  color: #64748b;
+  width: 12px;
+  display: inline-block;
+  text-align: center;
+}
+
+.global-settings-body {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid #e2e8f0;
 }
 
 .params-block { display: flex; flex-direction: column; gap: 10px; margin-top: 2px; }
