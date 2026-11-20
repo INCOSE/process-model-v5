@@ -5,6 +5,8 @@ import { Case4 } from './case4.js';
 import { Case5 } from './case5.js';
 import { Case6 } from './case6.js';
 import { Case7 } from './case7.js';
+import { Case8 } from './case8.js';
+import { Case9 } from './case9.js';
 
 export const CaseRegistry = {
     [Case1.id]: Case1,
@@ -14,6 +16,8 @@ export const CaseRegistry = {
     [Case5.id]: Case5,
     [Case6.id]: Case6,
     [Case7.id]: Case7,
+    [Case8.id]: Case8,
+    [Case9.id]: Case9,
 };
 
 export const casesList = Object.values(CaseRegistry).map(c => ({

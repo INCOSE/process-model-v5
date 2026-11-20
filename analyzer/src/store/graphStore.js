@@ -9,7 +9,7 @@ export const store = reactive({
   rawXml: null,
   processes: {},
   businessObjects: {},
-  
+
   settings: {
     useHierarchy: true,
     connectBorderObjects: true,
@@ -20,19 +20,21 @@ export const store = reactive({
 
   // UI state
   activeCaseId: 'case_1',
-  caseParams: {}, 
+  caseParams: {},
   uiMessage: { text: '', type: '' },
-  
-  // Visualization Engine Selection: 'mermaid', 'visjs', '3d'
+
+  // Visualisation Engine Selection: 'mermaid', 'visjs', '3d', 'n2', 'insights'
   activeEngine: 'mermaid',
-  
+
   // Universal Graph Data payload for renderers
   renderPayload: {
     nodes: new Set(),
     edges: [],
-    highlightedNodes: new Set(), // <--- Добавить это
+    highlightedNodes: new Set(),
     renderSubgraphs: false,
-    customLabels: {}
+    customLabels: {},
+    orderedPath: null,
+    analysisSummary: null
   }
 });
 
@@ -43,7 +45,7 @@ export const graphData = {
 };
 
 /**
- * Parses raw XML string and initializes the graph structures.
+ * Parses raw XML string and initialises the graph structures.
  */
 export function applyModelXml(xmlString, modelName = 'ISO 15288 Converted Model.xml') {
   store.isLoading = true;

@@ -11,6 +11,7 @@ import { graphToMermaidAndData } from '../renderers/mermaidGenerator.js';
 import { getProcessGroup, groupLayerY } from '../core/iso15288Groups.js';
 import { buildFlowSteps } from '../core/flowStepper.js';
 import N2Matrix from './N2Matrix.vue';
+import InsightsView from './InsightsView.vue';
 
 const fileInput = ref(null);
 const mermaidDiv = ref(null);
@@ -19,6 +20,7 @@ const threeDiv = ref(null);
 
 const errorContent = ref('');
 const selectedNodeInfo = ref(null);
+const showSummaryDrawer = ref(false);
 
 // 3D display controls
 const show3DLabels = ref(true);
@@ -68,6 +70,7 @@ const showNodeInfo = (rawId) => {
         const isProc = type.includes('BusinessFunction') || type.includes('BusinessProcess');
         const group = isProc ? getProcessGroup(name) : 'Business Object';
 
+        showSummaryDrawer.value = false;
         selectedNodeInfo.value = {
             name,
             group,
@@ -627,14 +630,20 @@ const fitView = () => {
     }
 };
 
+const toggleSummaryDrawer = () => {
+    showSummaryDrawer.value = !showSummaryDrawer.value;
+    if (showSummaryDrawer.value) selectedNodeInfo.value = null;
+};
+
 // Re-render when payload or engine changes
 watch(() => [store.renderPayload, store.activeEngine], async ([newPayload, engine]) => {
     selectedNodeInfo.value = null;
     stopAutoPlay();
     stepperActive.value = false;
     flowSteps.value = [];
+    showSummaryDrawer.value = Boolean(newPayload?.analysisSummary);
 
-    if (engine === 'n2') {
+    if (engine === 'n2' || engine === 'insights') {
         destroyRenderers();
         return;
     }
@@ -772,14 +781,17 @@ onUnmounted(() => {
         <button class="upload-btn" @click="fileInput.click()">📁 Choose File</button>
     </div>
 
-    <!-- N2 / DSM Matrix Engine (Works on Full Model even before running a case) -->
+    <!-- N2 / DSM Matrix Engine -->
     <N2Matrix v-else-if="store.activeEngine === 'n2'" />
 
-    <!-- Empty State Guide (Model is loaded, no diagram generated yet) -->
+    <!-- Insights, Practitioner Checklist & Dictionary Workspace -->
+    <InsightsView v-else-if="store.activeEngine === 'insights'" />
+
+    <!-- Empty State Guide -->
     <div v-else-if="store.renderPayload.nodes.size === 0" class="empty-state">
         <div class="empty-icon">📐</div>
         <h3>{{ store.modelName }} Ready</h3>
-        <p>Select an analysis scenario and parameters in the sidebar, then click <strong>"Generate Diagram"</strong>.</p>
+        <p>Select an analysis scenario and parameters in the sidebar, then click <strong>"Generate Diagram"</strong> — or switch directly to <strong>N2 / DSM Matrix</strong> or <strong>Insights &amp; Checklist</strong>.</p>
         <div class="model-quick-stats">
           <span class="stat-pill">Processes: <strong>{{ Object.keys(store.processes).length }}</strong></span>
           <span class="stat-pill">Business Objects: <strong>{{ Object.keys(store.businessObjects).length }}</strong></span>
@@ -808,6 +820,14 @@ onUnmounted(() => {
           >
             {{ stepperActive ? '⏹ Exit Stepper' : '▶ Step Flow' }}
           </button>
+          <button
+            v-if="store.renderPayload.analysisSummary"
+            :class="['toolbar-btn', { active: showSummaryDrawer }]"
+            @click="toggleSummaryDrawer"
+            title="Toggle audit / impact summary report"
+          >
+            📊 Report
+          </button>
           <template v-if="store.activeEngine === '3d'">
               <label class="toolbar-toggle">
                   <input type="checkbox" v-model="show3DLabels" />
@@ -833,6 +853,31 @@ onUnmounted(() => {
           </div>
           <div class="step-summary" :title="currentStepState?.summary">
               {{ currentStepState?.summary }}
+          </div>
+      </div>
+
+      <!-- Analysis Summary Drawer (Blast Radius / Tailoring Gap Check) -->
+      <div v-if="showSummaryDrawer && store.renderPayload.analysisSummary && !selectedNodeInfo" class="summary-panel">
+          <button class="info-close-btn" @click="showSummaryDrawer = false" aria-label="Close">&times;</button>
+          <h3>{{ store.renderPayload.analysisSummary.title }}</h3>
+          <p class="summary-sub">{{ store.renderPayload.analysisSummary.subtitle }}</p>
+
+          <div class="summary-metrics">
+              <div v-for="m in store.renderPayload.analysisSummary.metrics" :key="m.label" class="metric-box">
+                  <span class="metric-val">{{ m.value }}</span>
+                  <span class="metric-lbl">{{ m.label }}</span>
+              </div>
+          </div>
+
+          <div v-for="sec in store.renderPayload.analysisSummary.sections" :key="sec.title" class="summary-section">
+              <h4 :class="['sec-title', sec.tone]">{{ sec.title }}</h4>
+              <div v-if="sec.items.length === 0" class="summary-empty">None</div>
+              <ul v-else class="summary-list">
+                  <li v-for="(item, idx) in sec.items" :key="idx">
+                      <span class="sum-item-label">{{ item.label }}</span>
+                      <span v-if="item.detail" class="sum-item-detail">{{ item.detail }}</span>
+                  </li>
+              </ul>
           </div>
       </div>
 
@@ -873,7 +918,7 @@ onUnmounted(() => {
 /* Floating Canvas Toolbar */
 .canvas-toolbar {
     position: absolute; top: 18px; left: 20px; z-index: 100;
-    display: flex; align-items: center; gap: 10px;
+    display: flex; flex-wrap: wrap; align-items: center; gap: 10px;
     background: rgba(255, 255, 255, 0.92);
     border: 1px solid #d0d7de; border-radius: 8px;
     padding: 6px 10px; box-shadow: 0 3px 8px rgba(0, 0, 0, 0.08);
@@ -922,6 +967,41 @@ onUnmounted(() => {
     font-size: 12px; color: #334155; text-align: center;
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
+
+/* Analysis Summary Drawer */
+.summary-panel {
+    position: absolute; top: 20px; right: 20px; width: 350px; max-height: calc(100% - 110px);
+    background: #ffffff; border: 1px solid #d0d7de; border-radius: 8px;
+    box-shadow: 0 10px 25px rgba(0, 0, 0, 0.14); padding: 18px;
+    overflow-y: auto; z-index: 950;
+}
+.summary-panel h3 { margin: 0 0 4px 0; padding-right: 28px; font-size: 16px; color: #1e293b; }
+.summary-sub { margin: 0 0 12px 0; font-size: 12px; color: #64748b; }
+.summary-metrics {
+    display: flex; gap: 8px; margin-bottom: 14px;
+}
+.metric-box {
+    flex: 1; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 6px;
+    padding: 8px; text-align: center; display: flex; flex-direction: column;
+}
+.metric-val { font-size: 18px; font-weight: 700; color: #1e293b; }
+.metric-lbl { font-size: 10px; color: #64748b; text-transform: uppercase; font-weight: 600; }
+.summary-section { margin-bottom: 12px; }
+.sec-title { margin: 0 0 6px 0; font-size: 12px; text-transform: uppercase; letter-spacing: 0.3px; }
+.sec-title.danger { color: #c53030; }
+.sec-title.warning { color: #c05621; }
+.sec-title.ok { color: #2e7d32; }
+.summary-empty { font-size: 12px; color: #94a3b8; font-style: italic; }
+.summary-list {
+    list-style: none; padding: 0; margin: 0;
+    display: flex; flex-direction: column; gap: 5px;
+}
+.summary-list li {
+    background: #f8fafc; border: 1px solid #edf2f7; border-radius: 5px;
+    padding: 6px 8px; display: flex; flex-direction: column; gap: 2px;
+}
+.sum-item-label { font-size: 12px; font-weight: 600; color: #1e293b; }
+.sum-item-detail { font-size: 11px; color: #64748b; }
 
 .upload-overlay { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); text-align: center; background: white; padding: 40px; border-radius: 12px; box-shadow: 0 10px 25px rgba(0,0,0,0.1); border: 1px solid #e0e0e0; z-index: 10; }
 .upload-btn { background: #007bff; color: white; border: none; padding: 10px 20px; border-radius: 6px; font-size: 16px; cursor: pointer; margin-top: 15px; }

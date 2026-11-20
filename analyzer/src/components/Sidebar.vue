@@ -34,7 +34,9 @@ const getGroupedOptions = (sourceKey) => {
 
   return Object.entries(rawData).map(([id, name]) => {
     let group = 'Others';
-    if (sourceKey === 'processes' || sourceKey === 'dynamic_inputs' || sourceKey === 'dynamic_outputs') {
+    if (sourceKey === 'allNodes') {
+      group = store.processes[id] ? (iso15288Mapping[name] || 'Others') : 'Business Objects';
+    } else if (sourceKey === 'processes' || sourceKey === 'dynamic_inputs' || sourceKey === 'dynamic_outputs') {
       group = iso15288Mapping[name] || 'Others';
       if ((sourceKey === 'dynamic_inputs' || sourceKey === 'dynamic_outputs') && !store.processes[id]) {
         group = 'Business Objects';
@@ -48,10 +50,21 @@ const getGroupedOptions = (sourceKey) => {
 
 const activeCase = computed(() => CaseRegistry[store.activeCaseId]);
 
-watch(() => store.activeCaseId, () => {
-  store.caseParams = {};
-  store.uiMessage = { text: '', type: '' };
-});
+// Reset and initialise case default parameters when switching cases
+watch(
+  () => store.activeCaseId,
+  () => {
+    const defaults = {};
+    if (activeCase.value?.inputs) {
+      activeCase.value.inputs.forEach((inp) => {
+        if (inp.default !== undefined) defaults[inp.key] = inp.default;
+      });
+    }
+    store.caseParams = defaults;
+    store.uiMessage = { text: '', type: '' };
+  },
+  { immediate: true }
+);
 
 watch(() => store.caseParams.pCenter, (newVal, oldVal) => {
   if (newVal !== oldVal && store.activeCaseId === 'case_7') {
@@ -63,6 +76,7 @@ watch(() => store.caseParams.pCenter, (newVal, oldVal) => {
 const getDynamicOptions = (sourceKey) => {
   if (sourceKey === 'processes') return store.processes;
   if (sourceKey === 'businessObjects') return store.businessObjects;
+  if (sourceKey === 'allNodes') return { ...store.processes, ...store.businessObjects };
 
   if (sourceKey === 'dynamic_inputs' || sourceKey === 'dynamic_outputs') {
     const pCenter = store.caseParams.pCenter;
@@ -109,13 +123,19 @@ const runAnalysis = () => {
 
   store.uiMessage = { text: result.message || 'Diagram generated!', type: result.warning ? 'warning' : 'success' };
 
+  // If user was on Insights tab, switch back to Mermaid so they see the generated diagram
+  if (store.activeEngine === 'insights') {
+    store.activeEngine = 'mermaid';
+  }
+
   store.renderPayload = {
     nodes: result.nodes,
     edges: result.edges,
     highlightedNodes: result.highlightedNodes || new Set(),
     renderSubgraphs: result.renderSubgraphs || false,
     customLabels: result.customLabels || {},
-    orderedPath: result.orderedPath || null
+    orderedPath: result.orderedPath || null,
+    analysisSummary: result.analysisSummary || null
   };
 };
 
@@ -126,7 +146,8 @@ const clearDiagram = () => {
     highlightedNodes: new Set(),
     renderSubgraphs: false,
     customLabels: {},
-    orderedPath: null
+    orderedPath: null,
+    analysisSummary: null
   };
   store.uiMessage = { text: 'Diagram memory cleared.', type: 'warning' };
 };
@@ -151,7 +172,8 @@ const exportJson = () => {
       type: e.data.type || '',
       subclass: e.data.subclass || '',
       access: e.data.access || ''
-    }))
+    })),
+    analysisSummary: store.renderPayload.analysisSummary || undefined
   };
 
   const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(exportData, null, 4));
@@ -286,12 +308,13 @@ const exportJson = () => {
 
       <!-- Engine Selector -->
       <div class="engine-selector">
-        <label class="section-title">Visualisation Engine:</label>
+        <label class="section-title">Visualisation / Workspace:</label>
         <div class="radio-group">
           <label class="radio-label"><input type="radio" value="mermaid" v-model="store.activeEngine" /> Mermaid.js</label>
           <label class="radio-label"><input type="radio" value="visjs" v-model="store.activeEngine" /> Vis.js (2D Physics)</label>
           <label class="radio-label"><input type="radio" value="3d" v-model="store.activeEngine" /> 3D Force Graph</label>
           <label class="radio-label"><input type="radio" value="n2" v-model="store.activeEngine" /> N2 / DSM Matrix</label>
+          <label class="radio-label"><input type="radio" value="insights" v-model="store.activeEngine" /> Insights & Checklist</label>
         </div>
       </div>
 
