@@ -189,13 +189,23 @@ const matrixData = computed(() => {
     const prodMap = exchangeMap.get(rowProc.id);
     return procs.map((colProc, cIdx) => {
       if (rIdx === cIdx) {
-        return { isDiagonal: true, items: [], count: 0, isFeedback: false, hasSituational: false };
+        return {
+          isDiagonal: true,
+          items: [],
+          count: 0,
+          isFeedback: false,
+          hasSituational: false,
+          hasControls: false,
+          hasEnables: false
+        };
       }
       const objMap = prodMap?.get(colProc.id);
       const items = objMap ? Array.from(objMap.values()).sort((a, b) => a.name.localeCompare(b.name)) : [];
       const count = items.length;
       const isFeedback = rIdx > cIdx;
       const hasSituational = items.some((i) => i.isSituational);
+      const hasControls = items.some((i) => i.isControls);
+      const hasEnables = items.some((i) => i.isEnables);
       if (count > 0) {
         totalLinks++;
         if (isFeedback) feedbackLinks++;
@@ -207,6 +217,8 @@ const matrixData = computed(() => {
         count,
         isFeedback,
         hasSituational,
+        hasControls,
+        hasEnables,
         producer: rowProc,
         consumer: colProc
       };
@@ -229,6 +241,17 @@ const getCellStyle = (cell) => {
     backgroundColor: `rgba(46, 125, 50, ${intensity.toFixed(2)})`,
     color: intensity > 0.55 ? '#ffffff' : '#1b5e20'
   };
+};
+
+const getCellTooltip = (cell, rowProc, colProc) => {
+  if (cell.isDiagonal) return rowProc.name;
+  if (cell.count === 0) return '';
+  const tags = [];
+  if (cell.hasEnables) tags.push('Enables');
+  if (cell.hasSituational) tags.push('Situational');
+  if (cell.hasControls) tags.push('Controls');
+  const tagNote = tags.length ? ` [${tags.join(', ')}]` : '';
+  return `${rowProc.name} → ${colProc.name}: ${cell.count} artefact(s)${tagNote}`;
 };
 
 const selectCell = (cell, rIdx, cIdx) => {
@@ -401,18 +424,15 @@ const exportCsv = () => {
                 :style="getCellStyle(cell)"
                 @mouseenter="hoveredCell = { row: rIdx, col: cIdx }"
                 @click="selectCell(cell, rIdx, cIdx)"
-                :title="
-                  cell.isDiagonal
-                    ? rowProc.name
-                    : cell.count > 0
-                      ? `${rowProc.name} → ${matrixProcesses[cIdx].name}: ${cell.count} artefact(s)${cell.hasSituational ? ' (includes Situational)' : ''}`
-                      : ''
-                "
+                :title="getCellTooltip(cell, rowProc, matrixProcesses[cIdx])"
               >
                 <span v-if="cell.isDiagonal" class="diag-mark">{{ rIdx + 1 }}</span>
-                <span v-else-if="cell.count > 0" class="cell-count">
-                  {{ cell.count }}<sup v-if="cell.hasSituational" class="sit-mark" title="Includes Situational artefact">S</sup>
-                </span>
+                <template v-else-if="cell.count > 0">
+                  <span v-if="cell.hasEnables" class="corner-badge badge-e">E</span>
+                  <span v-if="cell.hasSituational" class="corner-badge badge-s">S</span>
+                  <span v-if="cell.hasControls" class="corner-badge badge-c">C</span>
+                  <span class="cell-count">{{ cell.count }}</span>
+                </template>
               </td>
             </tr>
           </tbody>
@@ -447,9 +467,9 @@ const exportCsv = () => {
               <div class="artefact-header">
                 <span class="artefact-name">{{ item.name }}</span>
                 <div class="artefact-tags">
+                  <span v-if="item.isEnables" class="en-tag">Enables</span>
                   <span v-if="item.isSituational" class="sit-tag">Situational</span>
-                  <span v-if="item.isControls" class="sys-tag">Controls</span>
-                  <span v-if="item.isEnables" class="sys-tag">Enables</span>
+                  <span v-if="item.isControls" class="ctrl-tag">Controls</span>
                 </div>
               </div>
               <div v-if="item.viaHierarchy" class="hierarchy-note">
@@ -465,16 +485,22 @@ const exportCsv = () => {
     <!-- Bottom Legend -->
     <div class="n2-legend">
       <div class="n2-legend-item">
-        <span class="swatch swatch-forward"></span> Above diagonal: Feedforward
+        <span class="swatch swatch-forward"></span> Feedforward (above diagonal)
       </div>
       <div class="n2-legend-item">
-        <span class="swatch swatch-feedback"></span> Below diagonal: Feedback / iteration
+        <span class="swatch swatch-feedback"></span> Feedback (below diagonal)
       </div>
       <div class="n2-legend-item">
-        <span class="sit-tag">S</span> Includes Situational artefact
+        <span class="en-tag">E</span> Enables (top-left)
       </div>
       <div class="n2-legend-item">
-        Click any numbered cell to inspect exchanged artefacts.
+        <span class="sit-tag">S</span> Situational (top-right)
+      </div>
+      <div class="n2-legend-item">
+        <span class="ctrl-tag">C</span> Controls (bottom-left)
+      </div>
+      <div class="n2-legend-item">
+        Click any numbered cell to inspect artefacts.
       </div>
     </div>
   </div>
@@ -646,9 +672,9 @@ const exportCsv = () => {
   border-bottom: 2px solid #cbd5e1;
   padding: 6px 2px;
   height: 155px;
-  width: 32px;
-  min-width: 32px;
-  max-width: 32px;
+  width: 36px;
+  min-width: 36px;
+  max-width: 36px;
   vertical-align: bottom;
   font-weight: 500;
 }
@@ -702,15 +728,17 @@ tr.row-highlighted .row-header {
 }
 
 .matrix-cell {
-  width: 32px;
-  height: 30px;
-  min-width: 32px;
+  position: relative;
+  width: 36px;
+  height: 34px;
+  min-width: 36px;
   text-align: center;
   vertical-align: middle;
   border-right: 1px solid #edf2f7;
   border-bottom: 1px solid #edf2f7;
   font-weight: 700;
   font-size: 11px;
+  padding: 0;
   transition: transform 0.1s;
 }
 .matrix-cell.crosshair {
@@ -728,11 +756,27 @@ tr.row-highlighted .row-header {
   outline: 2px solid #1565c0;
   outline-offset: -2px;
 }
-.sit-mark {
-  font-size: 8px;
-  margin-left: 1px;
-  opacity: 0.9;
+
+.cell-count {
+  position: relative;
+  z-index: 1;
 }
+
+/* Corner indicators inside matrix cells */
+.corner-badge {
+  position: absolute;
+  font-size: 8px;
+  font-weight: 800;
+  line-height: 1;
+  padding: 1px 2px;
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.85);
+  pointer-events: none;
+  z-index: 2;
+}
+.badge-e { top: 1px; left: 1px; color: #0284c7; }      /* Top-left: Enables */
+.badge-s { top: 1px; right: 1px; color: #7c3aed; }     /* Top-right: Situational */
+.badge-c { bottom: 1px; left: 1px; color: #b45309; }   /* Bottom-left: Controls */
 
 /* Inspector Drawer */
 .n2-inspector {
@@ -842,6 +886,15 @@ tr.row-highlighted .row-header {
   gap: 4px;
   flex-shrink: 0;
 }
+.en-tag {
+  font-size: 10px;
+  font-weight: 700;
+  padding: 2px 6px;
+  border-radius: 8px;
+  background: #e0f2fe;
+  color: #0369a1;
+  border: 1px solid #7dd3fc;
+}
 .sit-tag {
   font-size: 10px;
   font-weight: 700;
@@ -851,13 +904,14 @@ tr.row-highlighted .row-header {
   color: #6a1b9a;
   border: 1px solid #ce93d8;
 }
-.sys-tag {
+.ctrl-tag {
   font-size: 10px;
-  font-weight: 600;
+  font-weight: 700;
   padding: 2px 6px;
   border-radius: 8px;
-  background: #eceff1;
-  color: #546e7a;
+  background: #fef3c7;
+  color: #b45309;
+  border: 1px solid #fcd34d;
 }
 .hierarchy-note {
   font-size: 11px;
@@ -875,7 +929,7 @@ tr.row-highlighted .row-header {
   flex-shrink: 0;
   display: flex;
   flex-wrap: wrap;
-  gap: 18px;
+  gap: 14px;
   align-items: center;
   padding: 8px 16px;
   background: #ffffff;

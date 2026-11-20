@@ -51,6 +51,7 @@ export const Case8 = {
 
         const visitedDepth = new Map([[origin, 0]]);
         const queue = [{ id: origin, depth: 0 }];
+        // waveNum -> Map(nodeId -> label)
         const affectedProcessesByWave = {};
 
         const pushEdge = (u, v, attr) => {
@@ -81,8 +82,8 @@ export const Case8 = {
 
                 if (targetIsProc && target !== origin) {
                     const waveNum = originIsProcess ? Math.ceil(nextDepth / 2) : Math.ceil((nextDepth + 1) / 2);
-                    if (!affectedProcessesByWave[waveNum]) affectedProcessesByWave[waveNum] = new Set();
-                    affectedProcessesByWave[waveNum].add(gActive.getNodeAttribute(target, 'name') || target);
+                    if (!affectedProcessesByWave[waveNum]) affectedProcessesByWave[waveNum] = new Map();
+                    affectedProcessesByWave[waveNum].set(target, gActive.getNodeAttribute(target, 'name') || target);
                 }
 
                 if (!visitedDepth.has(target) || visitedDepth.get(target) > nextDepth) {
@@ -96,7 +97,7 @@ export const Case8 = {
             edgesToDraw = enforceBorderObjectRelations(gActive, nodesToDraw, edgesToDraw);
         }
 
-        const totalAffectedProcs = Object.values(affectedProcessesByWave).reduce((acc, s) => acc + s.size, 0);
+        const totalAffectedProcs = Object.values(affectedProcessesByWave).reduce((acc, m) => acc + m.size, 0);
         const totalAffectedObjs = Array.from(nodesToDraw).filter((id) => id !== origin && !isProcess(id)).length;
 
         const sections = Object.keys(affectedProcessesByWave)
@@ -104,7 +105,9 @@ export const Case8 = {
             .map((w) => ({
                 title: `Wave ${w} Affected Processes (${affectedProcessesByWave[w].size})`,
                 tone: Number(w) === 1 ? 'danger' : 'warning',
-                items: Array.from(affectedProcessesByWave[w]).sort().map((name) => ({ label: name }))
+                items: Array.from(affectedProcessesByWave[w].entries())
+                    .map(([id, label]) => ({ id, label }))
+                    .sort((a, b) => a.label.localeCompare(b.label))
             }));
 
         return {

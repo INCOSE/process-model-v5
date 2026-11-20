@@ -28,6 +28,9 @@ const shareStatus = ref('');
 const searchQuery = ref('');
 const searchFocusIdx = ref(0);
 
+// Report-pinned highlight nodes (Case 8 / Case 9 interactive checkboxes — zero redraw)
+const pinnedNodeIds = ref(new Set());
+
 // Step-by-step Flow Player state
 const stepperActive = ref(false);
 const flowSteps = ref([]);
@@ -105,7 +108,6 @@ const copyShareLink = async () => {
         await navigator.clipboard.writeText(shareUrl);
         shareStatus.value = '✓ Link Copied!';
     } catch {
-        // Fallback for browsers without clipboard permission
         window.prompt('Copy shareable link:', shareUrl);
         shareStatus.value = 'Link Ready';
     }
@@ -142,6 +144,125 @@ const handleMermaidBackgroundClick = (event) => {
 
 window.handleNodeClick = showNodeInfo;
 
+// --- MERMAID DOM HELPERS (ZERO-REDRAW PIN & ZOOM) ---
+const findMermaidNodeEl = (nodeId) => {
+    if (!mermaidDiv.value || !nodeId) return null;
+    const mId = nodeId.replace(/-/g, '_');
+    const candidates = mermaidDiv.value.querySelectorAll('.node, .cluster');
+    for (const el of candidates) {
+        const elId = el.getAttribute('id') || '';
+        if (elId === mId || elId.startsWith(`flowchart-${mId}-`) || elId.includes(`-${mId}-`)) {
+            return el;
+        }
+    }
+    return null;
+};
+
+const applyMermaidPinnedClasses = () => {
+    if (!mermaidDiv.value) return;
+    mermaidDiv.value.querySelectorAll('.report-pinned').forEach((el) => {
+        el.classList.remove('report-pinned');
+    });
+    pinnedNodeIds.value.forEach((nodeId) => {
+        const el = findMermaidNodeEl(nodeId);
+        if (el) el.classList.add('report-pinned');
+    });
+};
+
+// --- REPORT INTERACTIVE ACTIONS (PIN HIGHLIGHT & ZOOM-TO-NODE) ---
+const isNodeInDiagram = (nodeId) => Boolean(nodeId && store.renderPayload.nodes.has(nodeId));
+
+const togglePinNode = (nodeId) => {
+    if (!isNodeInDiagram(nodeId)) return;
+    const next = new Set(pinnedNodeIds.value);
+    if (next.has(nodeId)) next.delete(nodeId);
+    else next.add(nodeId);
+    pinnedNodeIds.value = next;
+
+    // Apply in-place across all 3 engines without redrawing or resetting layout
+    if (store.activeEngine === 'mermaid') {
+        applyMermaidPinnedClasses();
+    } else if (store.activeEngine === 'visjs') {
+        applyVisVisualState();
+    } else if (store.activeEngine === '3d') {
+        apply3DVisualState();
+    }
+};
+
+const clearPinnedNodes = () => {
+    pinnedNodeIds.value = new Set();
+    if (store.activeEngine === 'mermaid') {
+        applyMermaidPinnedClasses();
+    } else if (store.activeEngine === 'visjs') {
+        applyVisVisualState();
+    } else if (store.activeEngine === '3d') {
+        apply3DVisualState();
+    }
+};
+
+const zoomToNode = (nodeId) => {
+    if (!isNodeInDiagram(nodeId)) return;
+
+    if (store.activeEngine === 'mermaid' && panZoomInstance && mermaidDiv.value) {
+        const el = findMermaidNodeEl(nodeId);
+        if (!el) return;
+
+        const containerRect = mermaidDiv.value.getBoundingClientRect();
+        const nodeRect = el.getBoundingClientRect();
+
+        // Determine sensible zoom factor so the target node is clearly legible
+        const currentZoom = panZoomInstance.getZoom();
+        const targetNodeWidth = Math.min(260, containerRect.width * 0.24);
+        const desiredScale = nodeRect.width > 0 ? Math.min(2.6, Math.max(1.0, targetNodeWidth / nodeRect.width)) : 1.5;
+        const targetZoom = Math.min(4.5, Math.max(currentZoom, currentZoom * desiredScale));
+
+        // First pan node centre to viewport centre (accounting slightly for right summary panel)
+        const viewportCenterX = containerRect.left + (containerRect.width - (showSummaryDrawer.value ? 340 : 0)) / 2;
+        const viewportCenterY = containerRect.top + containerRect.height / 2;
+        const nodeCenterX = nodeRect.left + nodeRect.width / 2;
+        const nodeCenterY = nodeRect.top + nodeRect.height / 2;
+
+        panZoomInstance.panBy({
+            x: viewportCenterX - nodeCenterX,
+            y: viewportCenterY - nodeCenterY
+        });
+
+        if (targetZoom > currentZoom * 1.05) {
+            panZoomInstance.zoomAtPoint(targetZoom, {
+                x: viewportCenterX - containerRect.left,
+                y: viewportCenterY - containerRect.top
+            });
+        }
+
+        // Brief visual pulse on the focused SVG node
+        el.classList.remove('report-pulse');
+        void el.offsetWidth;
+        el.classList.add('report-pulse');
+        setTimeout(() => el.classList.remove('report-pulse'), 1500);
+
+    } else if (store.activeEngine === 'visjs' && visNetworkInstance) {
+        visNetworkInstance.focus(nodeId, {
+            scale: 1.35,
+            animation: { duration: 450, easingFunction: 'easeInOutQuad' }
+        });
+        visNetworkInstance.selectNodes([nodeId]);
+
+    } else if (store.activeEngine === '3d' && threeGraphInstance) {
+        const nodes = threeGraphInstance.graphData().nodes || [];
+        const node = nodes.find((n) => n.id === nodeId);
+        if (node && typeof node.x === 'number') {
+            const distance = 150;
+            const len = Math.hypot(node.x || 1, node.y || 1, node.z || 1);
+            const distRatio = 1 + distance / len;
+            threeGraphInstance.cameraPosition(
+                { x: node.x * distRatio, y: node.y + 38, z: node.z * distRatio },
+                node,
+                650
+            );
+        }
+    }
+};
+
 // --- IN-CANVAS SEARCH FOCUS ---
 const clearSearch = () => {
     searchQuery.value = '';
@@ -152,26 +273,7 @@ const focusNextSearchMatch = () => {
     if (searchMatchList.value.length === 0) return;
     const targetId = searchMatchList.value[searchFocusIdx.value % searchMatchList.value.length];
     searchFocusIdx.value = (searchFocusIdx.value + 1) % searchMatchList.value.length;
-
-    if (store.activeEngine === 'visjs' && visNetworkInstance) {
-        visNetworkInstance.focus(targetId, {
-            scale: 1.25,
-            animation: { duration: 450, easingFunction: 'easeInOutQuad' }
-        });
-        visNetworkInstance.selectNodes([targetId]);
-    } else if (store.activeEngine === '3d' && threeGraphInstance) {
-        const nodes = threeGraphInstance.graphData().nodes || [];
-        const node = nodes.find((n) => n.id === targetId);
-        if (node && typeof node.x === 'number') {
-            const distance = 160;
-            const distRatio = 1 + distance / Math.hypot(node.x || 1, node.y || 1, node.z || 1);
-            threeGraphInstance.cameraPosition(
-                { x: node.x * distRatio, y: node.y + 40, z: node.z * distRatio },
-                node,
-                800
-            );
-        }
-    }
+    zoomToNode(targetId);
 };
 
 // --- STEPPER CONTROLS ---
@@ -446,15 +548,25 @@ const add3DLayerPlanes = (nodes, planeSize) => {
     threeGraphInstance.scene().add(groupObj);
 };
 
-// --- APPLY STEP / SEARCH VISUAL STATE TO VIS.JS & 3D IN-PLACE ---
+// --- APPLY STEP / SEARCH / REPORT-PIN VISUAL STATE TO VIS.JS & 3D IN-PLACE ---
 const applyVisVisualState = () => {
     if (!visNetworkInstance) return;
     const nodesDS = visNetworkInstance.body.data.nodes;
     const edgesDS = visNetworkInstance.body.data.edges;
     const stepState = currentStepState.value;
     const matches = searchMatchSet.value;
+    const pinned = pinnedNodeIds.value;
+    const hasPins = pinned.size > 0;
 
     const updatedNodes = visBaseNodes.map((n) => {
+        if (pinned.has(n.id)) {
+            return {
+                ...n,
+                color: { background: '#FCE4EC', border: '#D81B60', highlight: { background: '#F8BBD0', border: '#AD1457' } },
+                borderWidth: 4.5,
+                opacity: 1
+            };
+        }
         if (matches !== null) {
             if (matches.has(n.id)) {
                 return {
@@ -490,10 +602,21 @@ const applyVisVisualState = () => {
                 opacity: 0.3
             };
         }
+        if (hasPins) {
+            return { ...n, opacity: 0.45 };
+        }
         return n;
     });
 
     const updatedEdges = visBaseEdges.map((e) => {
+        if (hasPins && (pinned.has(e.from) || pinned.has(e.to))) {
+            return {
+                ...e,
+                width: 2.8,
+                color: { color: '#D81B60', highlight: '#AD1457' },
+                font: { ...e.font, color: '#AD1457' }
+            };
+        }
         if (matches !== null) {
             const touched = matches.has(e.from) || matches.has(e.to);
             return touched
@@ -520,6 +643,14 @@ const applyVisVisualState = () => {
                 font: { ...e.font, color: 'rgba(160,160,160,0.35)' }
             };
         }
+        if (hasPins) {
+            return {
+                ...e,
+                width: 1,
+                color: { color: 'rgba(180,180,180,0.32)' },
+                font: { ...e.font, color: 'rgba(160,160,160,0.4)' }
+            };
+        }
         return e;
     });
 
@@ -531,9 +662,12 @@ const apply3DVisualState = () => {
     if (!threeGraphInstance) return;
     const stepState = currentStepState.value;
     const matches = searchMatchSet.value;
+    const pinned = pinnedNodeIds.value;
+    const hasPins = pinned.size > 0;
 
     threeGraphInstance
         .nodeColor((node) => {
+            if (pinned.has(node.id)) return '#D81B60';
             if (matches !== null) {
                 return matches.has(node.id) ? '#E65100' : '#dde1e6';
             }
@@ -542,9 +676,11 @@ const apply3DVisualState = () => {
                 if (stepState.visitedNodes.has(node.id)) return node.color;
                 return '#d8dde3';
             }
+            if (hasPins) return '#cfd6de';
             return node.color;
         })
         .nodeVal((node) => {
+            if (pinned.has(node.id)) return Math.max(node.val * 2.2, 16);
             if (matches !== null && matches.has(node.id)) return Math.max(node.val * 1.9, 14);
             return node.val;
         })
@@ -552,6 +688,7 @@ const apply3DVisualState = () => {
             const u = typeof link.source === 'object' ? link.source.id : link.source;
             const v = typeof link.target === 'object' ? link.target.id : link.target;
             const key = `${u}___${v}`;
+            if (hasPins && (pinned.has(u) || pinned.has(v))) return '#D81B60';
             if (matches !== null) {
                 return (matches.has(u) || matches.has(v)) ? '#E65100' : '#e5e7eb';
             }
@@ -560,12 +697,14 @@ const apply3DVisualState = () => {
                 if (stepState.visitedEdges.has(key)) return '#7a869a';
                 return '#e5e7eb';
             }
+            if (hasPins) return '#e2e8f0';
             return link.isSystemic ? '#b0b8c1' : '#7a869a';
         })
         .linkWidth((link) => {
             const u = typeof link.source === 'object' ? link.source.id : link.source;
             const v = typeof link.target === 'object' ? link.target.id : link.target;
             const key = `${u}___${v}`;
+            if (hasPins && (pinned.has(u) || pinned.has(v))) return 2.8;
             if (matches !== null) {
                 return (matches.has(u) || matches.has(v)) ? 2.4 : 0.4;
             }
@@ -574,17 +713,20 @@ const apply3DVisualState = () => {
                 if (stepState.visitedEdges.has(key)) return 1.2;
                 return 0.4;
             }
+            if (hasPins) return 0.5;
             return link.isSystemic ? 0.8 : 1.4;
         })
         .linkDirectionalParticles((link) => {
             const u = typeof link.source === 'object' ? link.source.id : link.source;
             const v = typeof link.target === 'object' ? link.target.id : link.target;
             const key = `${u}___${v}`;
+            if (hasPins) return (pinned.has(u) || pinned.has(v)) ? 3 : 0;
             if (matches !== null) return (matches.has(u) || matches.has(v)) ? 2 : 0;
             if (stepState) return stepState.activeEdges.has(key) ? 4 : 0;
             return link.isSystemic ? 1 : 2;
         })
         .linkDirectionalParticleColor((link) => {
+            if (hasPins) return '#D81B60';
             if (matches !== null) return '#E65100';
             if (stepState) return '#1565C0';
             return link.isSystemic ? '#9aa5b1' : '#4CAF50';
@@ -650,6 +792,10 @@ const renderMermaid = async (payload, preserveView = false) => {
         } else {
             panZoomInstance.fit();
             panZoomInstance.center();
+        }
+
+        if (pinnedNodeIds.value.size > 0) {
+            applyMermaidPinnedClasses();
         }
     } catch (error) {
         errorContent.value = error.message;
@@ -756,7 +902,7 @@ const renderVisJs = (payload) => {
         else selectedNodeInfo.value = null;
     });
 
-    if (currentStepState.value || searchMatchSet.value !== null) {
+    if (currentStepState.value || searchMatchSet.value !== null || pinnedNodeIds.value.size > 0) {
         applyVisVisualState();
     }
 };
@@ -794,8 +940,6 @@ const render3D = (payload) => {
 
     const nodeById = new Map(nodes.map((n) => [n.id, n]));
 
-    // Deterministic vertical placement for artefacts in ISO Layers mode:
-    // Place each artefact midway between its connected process layers (or slightly above a single layer).
     if (layered) {
         const neighbourProcessYs = new Map();
         payload.edges.forEach((e) => {
@@ -819,11 +963,9 @@ const render3D = (payload) => {
                 const uniqueYs = Array.from(new Set(ys));
                 const avgY = ys.reduce((a, b) => a + b, 0) / ys.length;
                 if (uniqueYs.length === 1) {
-                    // Single-layer artefact: hover neatly above the plane (or below if top External plane)
                     const offset = uniqueYs[0] >= 180 ? -30 : 30;
                     n.fy = uniqueYs[0] + offset;
                 } else {
-                    // Cross-layer artefact: sit midway between connected planes with tiny stagger to avoid overlap
                     const stagger = ((artIdx % 3) - 1) * 7;
                     n.fy = avgY + stagger;
                 }
@@ -832,7 +974,6 @@ const render3D = (payload) => {
         });
     }
 
-    // Compute plane size dynamically based on densest process layer
     const layerCounts = {};
     nodes.forEach((n) => {
         if (n.isProc) layerCounts[n.group] = (layerCounts[n.group] || 0) + 1;
@@ -906,7 +1047,6 @@ const render3D = (payload) => {
     const chargeForce = threeGraphInstance.d3Force('charge');
     if (chargeForce) chargeForce.strength(layered ? -260 : -360);
 
-    // Keep all nodes strictly within the horizontal bounds of the visual ISO planes
     if (layered) {
         const limit = planeSize / 2 - 28;
         threeGraphInstance.d3Force('planeBounds', () => {
@@ -924,7 +1064,7 @@ const render3D = (payload) => {
         add3DLayerPlanes(nodes, planeSize);
     }
 
-    if (currentStepState.value || searchMatchSet.value !== null) {
+    if (currentStepState.value || searchMatchSet.value !== null || pinnedNodeIds.value.size > 0) {
         apply3DVisualState();
     }
 };
@@ -961,6 +1101,7 @@ watch(
         flowSteps.value = [];
         searchQuery.value = '';
         searchFocusIdx.value = 0;
+        pinnedNodeIds.value = new Set();
         showSummaryDrawer.value = Boolean(newPayload?.analysisSummary);
 
         if (view !== 'graph' || !newPayload || newPayload.nodes.size === 0) {
@@ -1193,7 +1334,7 @@ onUnmounted(() => {
                     {{ searchMatchList.length }}
                 </span>
                 <button
-                  v-if="searchMatchList.length > 0 && store.activeEngine !== 'mermaid'"
+                  v-if="searchMatchList.length > 0"
                   class="search-action-btn"
                   @click="focusNextSearchMatch"
                   title="Focus next matching node (Enter)"
@@ -1238,7 +1379,7 @@ onUnmounted(() => {
             </div>
         </div>
 
-        <!-- Analysis Summary Drawer -->
+        <!-- Analysis Summary Drawer (Interactive Zoom + Multi-Highlight without Redraw) -->
         <div v-if="showSummaryDrawer && store.renderPayload.analysisSummary && !selectedNodeInfo" class="summary-panel">
             <button class="info-close-btn" @click="showSummaryDrawer = false" aria-label="Close">&times;</button>
             <h3>{{ store.renderPayload.analysisSummary.title }}</h3>
@@ -1251,13 +1392,42 @@ onUnmounted(() => {
                 </div>
             </div>
 
+            <div v-if="pinnedNodeIds.size > 0" class="pinned-bar">
+                <span>{{ pinnedNodeIds.size }} node(s) highlighted</span>
+                <button class="clear-pins-btn" @click="clearPinnedNodes">Clear all</button>
+            </div>
+
             <div v-for="sec in store.renderPayload.analysisSummary.sections" :key="sec.title" class="summary-section">
                 <h4 :class="['sec-title', sec.tone]">{{ sec.title }}</h4>
                 <div v-if="sec.items.length === 0" class="summary-empty">None</div>
                 <ul v-else class="summary-list">
-                    <li v-for="(item, idx) in sec.items" :key="idx">
-                        <span class="sum-item-label">{{ item.label }}</span>
-                        <span v-if="item.detail" class="sum-item-detail">{{ item.detail }}</span>
+                    <li
+                      v-for="(item, idx) in sec.items"
+                      :key="item.id || idx"
+                      :class="{ 'is-pinned': item.id && pinnedNodeIds.has(item.id) }"
+                    >
+                        <div class="sum-item-row">
+                            <input
+                              v-if="item.id && isNodeInDiagram(item.id)"
+                              type="checkbox"
+                              class="sum-pin-checkbox"
+                              :checked="pinnedNodeIds.has(item.id)"
+                              @change="togglePinNode(item.id)"
+                              title="Highlight node on diagram"
+                            />
+                            <div class="sum-item-text">
+                                <span class="sum-item-label">{{ item.label }}</span>
+                                <span v-if="item.detail" class="sum-item-detail">{{ item.detail }}</span>
+                            </div>
+                            <button
+                              v-if="item.id && isNodeInDiagram(item.id)"
+                              class="sum-zoom-btn"
+                              @click="zoomToNode(item.id)"
+                              title="Zoom to node"
+                            >
+                              🎯
+                            </button>
+                        </div>
                     </li>
                 </ul>
             </div>
@@ -1380,6 +1550,27 @@ onUnmounted(() => {
 
 .render-div { width: 100%; height: 100%; overflow: hidden; outline: none; }
 
+/* Mermaid zero-redraw highlight & zoom pulse */
+.render-div :deep(.node.report-pinned rect),
+.render-div :deep(.node.report-pinned polygon),
+.render-div :deep(.node.report-pinned path),
+.render-div :deep(.cluster.report-pinned rect) {
+    stroke: #D81B60 !important;
+    stroke-width: 4.5px !important;
+    fill: #FCE4EC !important;
+    filter: drop-shadow(0 0 6px rgba(216, 27, 96, 0.55));
+}
+
+.render-div :deep(.node.report-pulse),
+.render-div :deep(.cluster.report-pulse) {
+    animation: mermaidNodePulse 0.75s ease-in-out 2;
+}
+
+@keyframes mermaidNodePulse {
+    0%, 100% { filter: drop-shadow(0 0 0 rgba(216, 27, 96, 0)); }
+    50% { filter: drop-shadow(0 0 14px rgba(216, 27, 96, 0.95)); }
+}
+
 /* Floating Canvas Toolbar */
 .canvas-toolbar {
     position: absolute; top: 14px; left: 16px; z-index: 100;
@@ -1471,13 +1662,27 @@ onUnmounted(() => {
 }
 .summary-panel h3 { margin: 0 0 4px 0; padding-right: 28px; font-size: 16px; color: #1e293b; }
 .summary-sub { margin: 0 0 12px 0; font-size: 12px; color: #64748b; }
-.summary-metrics { display: flex; gap: 8px; margin-bottom: 14px; }
+.summary-metrics { display: flex; gap: 8px; margin-bottom: 12px; }
 .metric-box {
     flex: 1; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 6px;
     padding: 8px; text-align: center; display: flex; flex-direction: column;
 }
 .metric-val { font-size: 18px; font-weight: 700; color: #1e293b; }
 .metric-lbl { font-size: 10px; color: #64748b; text-transform: uppercase; font-weight: 600; }
+
+.pinned-bar {
+    display: flex; justify-content: space-between; align-items: center;
+    background: #FCE4EC; border: 1px solid #F48FB1; color: #AD1457;
+    padding: 5px 10px; border-radius: 6px; font-size: 11.5px; font-weight: 600;
+    margin-bottom: 12px;
+}
+.clear-pins-btn {
+    border: none; background: #ffffff; color: #AD1457;
+    border-radius: 4px; padding: 2px 7px; font-size: 11px; font-weight: 700;
+    cursor: pointer;
+}
+.clear-pins-btn:hover { background: #F8BBD0; }
+
 .summary-section { margin-bottom: 12px; }
 .sec-title { margin: 0 0 6px 0; font-size: 12px; text-transform: uppercase; letter-spacing: 0.3px; }
 .sec-title.danger { color: #c53030; }
@@ -1487,10 +1692,31 @@ onUnmounted(() => {
 .summary-list { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 5px; }
 .summary-list li {
     background: #f8fafc; border: 1px solid #edf2f7; border-radius: 5px;
-    padding: 6px 8px; display: flex; flex-direction: column; gap: 2px;
+    padding: 6px 8px; transition: background 0.15s, border-color 0.15s;
+}
+.summary-list li.is-pinned {
+    background: #FCE4EC; border-color: #F48FB1;
+}
+.sum-item-row {
+    display: flex; align-items: flex-start; gap: 7px;
+}
+.sum-pin-checkbox {
+    margin-top: 2px; cursor: pointer; accent-color: #D81B60; flex-shrink: 0;
+}
+.sum-item-text {
+    flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px;
 }
 .sum-item-label { font-size: 12px; font-weight: 600; color: #1e293b; }
 .sum-item-detail { font-size: 11px; color: #64748b; }
+.sum-zoom-btn {
+    flex-shrink: 0; border: 1px solid #cbd5e1; background: #ffffff;
+    border-radius: 4px; width: 24px; height: 22px; padding: 0;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 11px; cursor: pointer; transition: background 0.15s, border-color 0.15s;
+}
+.sum-zoom-btn:hover {
+    background: #e2e8f0; border-color: #94a3b8;
+}
 
 .upload-overlay { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); text-align: center; background: white; padding: 40px; border-radius: 12px; box-shadow: 0 10px 25px rgba(0,0,0,0.1); border: 1px solid #e0e0e0; z-index: 10; }
 .upload-btn { background: #007bff; color: white; border: none; padding: 10px 20px; border-radius: 6px; font-size: 16px; cursor: pointer; margin-top: 15px; }

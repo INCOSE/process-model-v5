@@ -42,7 +42,6 @@ export const Case9 = {
             return { error: true, message: "Please select at least 1 process to audit." };
         }
 
-        const selectedSet = new Set(selectedIds);
         const isProcess = (id) => {
             const t = gActive.getNodeAttribute(id, 'type') || '';
             return t.includes('BusinessFunction') || t.includes('BusinessProcess');
@@ -63,7 +62,6 @@ export const Case9 = {
         };
 
         // Track artefacts connected to the selected processes
-        // artefactId -> { producersIn: Set, consumersIn: Set, edges: Array }
         const artefactMap = new Map();
         const ensureObj = (objId) => {
             if (!artefactMap.has(objId)) {
@@ -130,12 +128,13 @@ export const Case9 = {
             const hasCons = info.consumersIn.size > 0;
 
             if (hasProd && hasCons) {
-                internalInterfaces.push({ label: name });
+                internalInterfaces.push({ id: objId, label: name });
                 nodesToDraw.add(objId);
                 info.edges.forEach((e) => pushEdge(e.u, e.v, e.data));
             } else if (!hasProd && hasCons) {
                 const missingProducers = getStandardProducers(objId);
                 orphanedInputs.push({
+                    id: objId,
                     label: name,
                     detail: missingProducers.length > 0
                         ? `Normally produced by: ${missingProducers.join(', ')}`
@@ -149,6 +148,7 @@ export const Case9 = {
             } else if (hasProd && !hasCons) {
                 const missingConsumers = getStandardConsumers(objId);
                 deadEndOutputs.push({
+                    id: objId,
                     label: name,
                     detail: missingConsumers.length > 0
                         ? `Normally consumed by: ${missingConsumers.join(', ')}`

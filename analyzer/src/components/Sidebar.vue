@@ -109,6 +109,23 @@ const getDynamicOptions = (sourceKey) => {
   return {};
 };
 
+const isDynamicMultiSelect = (input) =>
+  input.type === 'multiselect' &&
+  (input.optionsSource === 'dynamic_inputs' || input.optionsSource === 'dynamic_outputs');
+
+const getDynamicOptionCount = (sourceKey) => Object.keys(getDynamicOptions(sourceKey)).length;
+
+const isAllDynamicSelected = (inputKey, sourceKey) => {
+  const allIds = Object.keys(getDynamicOptions(sourceKey));
+  const selected = store.caseParams[inputKey] || [];
+  return allIds.length > 0 && allIds.every((id) => selected.includes(id));
+};
+
+const toggleSelectAllDynamic = (inputKey, sourceKey, checked) => {
+  const allIds = Object.keys(getDynamicOptions(sourceKey));
+  store.caseParams[inputKey] = checked ? allIds : [];
+};
+
 const runAnalysis = () => {
   executeActiveCase(true);
 };
@@ -262,7 +279,20 @@ const exportJson = () => {
       <!-- Dynamic Case Parameters -->
       <div v-if="activeCase" class="params-block">
         <div v-for="input in activeCase.inputs" :key="input.key" class="dynamic-input">
-          <label v-if="input.type !== 'checkbox'">{{ input.label }}</label>
+          <div v-if="input.type !== 'checkbox'" class="input-label-row">
+            <label>{{ input.label }}</label>
+            <label
+              v-if="isDynamicMultiSelect(input) && getDynamicOptionCount(input.optionsSource) > 0"
+              class="select-all-toggle"
+            >
+              <input
+                type="checkbox"
+                :checked="isAllDynamicSelected(input.key, input.optionsSource)"
+                @change="toggleSelectAllDynamic(input.key, input.optionsSource, $event.target.checked)"
+              />
+              Select all ({{ getDynamicOptionCount(input.optionsSource) }})
+            </label>
+          </div>
 
           <SearchableSelect
             v-if="input.type === 'multiselect'"
@@ -401,6 +431,28 @@ const exportJson = () => {
 .checkbox-label input { margin-top: 3px; }
 .divider { border: 0; border-top: 1px solid #eee; margin: 16px 0; }
 .dynamic-input { display: flex; flex-direction: column; gap: 5px; font-size: 13px; }
+
+.input-label-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+}
+.select-all-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: #0284c7;
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+}
+.select-all-toggle input {
+  margin: 0;
+  cursor: pointer;
+}
 
 .action-btn { background: #4CAF50; color: white; border: none; padding: 10px; border-radius: 6px; cursor: pointer; font-weight: bold; margin-top: 6px; transition: background 0.2s; }
 .action-btn:hover:not(:disabled) { background: #45a049; }
