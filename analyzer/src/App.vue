@@ -8,6 +8,7 @@ import { parseUrlState, buildShareUrl } from './core/urlState.js';
 
 const workspaceTabs = [
   { id: 'graph', label: '🕸️ Scenario Graph' },
+  { id: 'model3d', label: '🌐 3D Full Model' },
   { id: 'n2', label: '🔢 N2 / DSM Matrix' },
   { id: 'checklist', label: '📋 Process Checklist' },
   { id: 'hotspots', label: '🔥 Hotspots' },

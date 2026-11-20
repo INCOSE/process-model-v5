@@ -3,7 +3,7 @@
  * into shareable URL query parameters.
  */
 
-const VALID_VIEWS = new Set(['graph', 'n2', 'checklist', 'hotspots', 'dictionary']);
+const VALID_VIEWS = new Set(['graph', 'model3d', 'n2', 'checklist', 'hotspots', 'dictionary']);
 const VALID_ENGINES = new Set(['mermaid', 'visjs', '3d']);
 
 function encodeParams(obj) {
@@ -57,6 +57,11 @@ export function buildShareUrl(store) {
 
   if (store.activeView === 'checklist' && store.selectedChecklistProcessId) {
     q.set('proc', store.selectedChecklistProcessId);
+  }
+
+  if (store.activeView === 'model3d') {
+    if (store.threeOptions.isLayered) q.set('layers', '1');
+    if (!store.threeOptions.showLabels) q.set('labels', '0');
   }
 
   if (store.activeView === 'graph') {

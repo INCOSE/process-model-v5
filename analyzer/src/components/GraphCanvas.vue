@@ -12,6 +12,7 @@ import { getProcessGroup, groupLayerY, groupColors } from '../core/iso15288Group
 import { buildFlowSteps } from '../core/flowStepper.js';
 import N2Matrix from './N2Matrix.vue';
 import InsightsView from './InsightsView.vue';
+import FullModel3D from './FullModel3D.vue';
 
 const stageRef = ref(null);
 const fileInput = ref(null);
@@ -89,6 +90,20 @@ mermaid.initialize({
     }
 });
 
+// --- INTERNAL ACTIVITIES HELPER ---
+const getInternalActivities = (nodeId) => {
+    const gFull = graphData.gFull;
+    if (!gFull || !gFull.hasNode(nodeId)) return [];
+    const list = [];
+    gFull.forEachOutEdge(nodeId, (edge, attr, u, v) => {
+        const t = gFull.getNodeAttribute(v, 'type') || '';
+        if (attr.type?.includes('Composition') && t.includes('BusinessProcess')) {
+            list.push(gFull.getNodeAttribute(v, 'name') || v);
+        }
+    });
+    return list;
+};
+
 // --- UNIVERSAL NODE CLICK HANDLER ---
 const showNodeInfo = (rawId) => {
     const originalId = rawId.replace(/_/g, '-');
@@ -104,7 +119,8 @@ const showNodeInfo = (rawId) => {
         selectedNodeInfo.value = {
             name,
             group,
-            doc: gActive.getNodeAttribute(originalId, 'doc') || 'Description is missing in the model.'
+            doc: gActive.getNodeAttribute(originalId, 'doc') || 'Description is missing in the model.',
+            activities: type.includes('BusinessFunction') ? getInternalActivities(originalId) : []
         };
     } else {
         selectedNodeInfo.value = null;
@@ -120,6 +136,8 @@ const handleMermaidBackgroundClick = (event) => {
 window.handleNodeClick = showNodeInfo;
 
 // --- MERMAID DOM HELPERS (ZERO-REDRAW PIN & ZOOM) ---
+const MERMAID_SHAPE_SELECTOR = ':scope > rect, :scope > polygon, :scope > circle, :scope > ellipse, :scope > path, .label-container';
+
 const findMermaidNodeEl = (nodeId) => {
     if (!mermaidDiv.value || !nodeId) return null;
     const mId = nodeId.replace(/-/g, '_');
@@ -133,12 +151,9 @@ const findMermaidNodeEl = (nodeId) => {
     return null;
 };
 
-const MERMAID_SHAPE_SELECTOR = ':scope > rect, :scope > polygon, :scope > circle, :scope > ellipse, :scope > path, .label-container';
-
 const applyMermaidPinnedClasses = () => {
     if (!mermaidDiv.value) return;
 
-    // Reset previously pinned nodes back to Mermaid's original styling
     mermaidDiv.value.querySelectorAll('.report-pinned').forEach((el) => {
         el.classList.remove('report-pinned');
         el.style.removeProperty('filter');
@@ -149,7 +164,6 @@ const applyMermaidPinnedClasses = () => {
         });
     });
 
-    // Apply inline !important highlight so it overrides Mermaid's #id !important rules
     pinnedNodeIds.value.forEach((nodeId) => {
         const el = findMermaidNodeEl(nodeId);
         if (!el) return;
@@ -451,7 +465,7 @@ const createTextSprite = (node) => {
     return sprite;
 };
 
-// --- 3D ISO LAYER PLANES BUILDER ---
+// --- 3D PROCESS GROUP PLANES BUILDER ---
 const createLayerLabelSprite = (text, colorHex) => {
     const canvas = document.createElement('canvas');
     const ctx = canvas.getContext('2d');
@@ -798,61 +812,99 @@ const renderVisJs = (payload) => {
     if (!visDiv.value) return;
     const gActive = graphData.gActive();
 
-    visBaseNodes = Array.from(payload.nodes).map(id => {
-        const type = gActive.getNodeAttribute(id, 'type') || '';
-        const isProc = type.includes('BusinessFunction') || type.includes('BusinessProcess');
-        const isHighlighted = payload.highlightedNodes && payload.highlightedNodes.has(id);
+    // Fold internal BusinessProcess activities inside their parent BusinessFunction card
+    // instead of drawing dangling Composition nodes.
+    const embeddedActivitiesByParent = new Map();
+    const foldedChildIds = new Set();
 
-        return {
-            id,
-            label: payload.customLabels[id] || gActive.getNodeAttribute(id, 'name') || 'Unknown',
-            shape: isProc ? 'box' : 'ellipse',
-            color: isHighlighted
-                ? { background: '#FFE6CC', border: '#D79B00', highlight: { background: '#FFD9B3', border: '#B37F00' } }
-                : (isProc
-                    ? { background: '#FFF2CC', border: '#D6B656', highlight: { background: '#FFE8A3', border: '#B89635' } }
-                    : { background: '#D5E8D4', border: '#82B366', highlight: { background: '#C0DFBE', border: '#5E8E45' } }),
-            font: { face: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif', size: isHighlighted ? 15 : 13, bold: isHighlighted, color: '#222222' },
-            borderWidth: isHighlighted ? 3 : 1.5,
-            margin: 10,
-            opacity: 1
-        };
-    });
-
-    visBaseEdges = payload.edges.map((e, idx) => {
-        const type = e.data.type || "";
-        const access = (e.data.access || "").toLowerCase();
-        const subclass = e.data.subclass || "";
-        let label = "", dashes = false;
-
-        if (type.includes('Access')) {
-            if (subclass === 'Controls') { label = "Controls"; dashes = true; }
-            else if (subclass === 'Enables') { label = "Enables"; dashes = true; }
-            else if (subclass === 'Situational') { label = access === 'read' ? "Situational Input" : "Situational Output"; dashes = true; }
-            else if (access === 'read') label = "Input";
-            else if (access === 'write') label = "Output";
-        } else {
-            label = type.replace("Relationship", "").replace("archimate:", "");
-            if (label === 'Specialization') dashes = true;
+    payload.edges.forEach((e) => {
+        const eType = e.data?.type || '';
+        if (!eType.includes('Composition')) return;
+        const uType = gActive.getNodeAttribute(e.u, 'type') || '';
+        const vType = gActive.getNodeAttribute(e.v, 'type') || '';
+        if (uType.includes('BusinessFunction') && vType.includes('BusinessProcess')) {
+            if (!embeddedActivitiesByParent.has(e.u)) embeddedActivitiesByParent.set(e.u, []);
+            const childName = payload.customLabels[e.v] || gActive.getNodeAttribute(e.v, 'name') || 'Activity';
+            embeddedActivitiesByParent.get(e.u).push(childName);
+            foldedChildIds.add(e.v);
         }
-
-        return {
-            id: `e_${idx}_${e.u}_${e.v}`,
-            from: e.u,
-            to: e.v,
-            label,
-            dashes,
-            width: 1.5,
-            arrows: 'to',
-            font: { size: 11, align: 'middle', strokeWidth: 3, strokeColor: '#ffffff', color: '#444444' },
-            color: { color: dashes ? '#999999' : '#666666', highlight: '#222222' }
-        };
     });
+
+    visBaseNodes = Array.from(payload.nodes)
+        .filter((id) => !foldedChildIds.has(id))
+        .map((id) => {
+            const type = gActive.getNodeAttribute(id, 'type') || '';
+            const isProc = type.includes('BusinessFunction') || type.includes('BusinessProcess');
+            const isHighlighted = payload.highlightedNodes && payload.highlightedNodes.has(id);
+            const baseName = payload.customLabels[id] || gActive.getNodeAttribute(id, 'name') || 'Unknown';
+
+            const embedded = embeddedActivitiesByParent.get(id);
+            let label = baseName;
+            let align = 'center';
+            let widthMax = 185;
+
+            if (embedded && embedded.length > 0) {
+                label = `${baseName}\n────────────────────\n` + embedded.map((a) => `• ${a}`).join('\n');
+                align = 'left';
+                widthMax = 260;
+            }
+
+            return {
+                id,
+                label,
+                shape: isProc ? 'box' : 'ellipse',
+                widthConstraint: { maximum: widthMax },
+                color: isHighlighted || (embedded && embedded.length > 0)
+                    ? { background: '#FFE6CC', border: '#D79B00', highlight: { background: '#FFD9B3', border: '#B37F00' } }
+                    : (isProc
+                        ? { background: '#FFF2CC', border: '#D6B656', highlight: { background: '#FFE8A3', border: '#B89635' } }
+                        : { background: '#D5E8D4', border: '#82B366', highlight: { background: '#C0DFBE', border: '#5E8E45' } }),
+                font: {
+                    face: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
+                    size: isHighlighted ? 14 : 13,
+                    bold: isHighlighted,
+                    align,
+                    color: '#222222'
+                },
+                borderWidth: isHighlighted || (embedded && embedded.length > 0) ? 2.5 : 1.5,
+                margin: embedded && embedded.length > 0 ? 12 : 10,
+                opacity: 1
+            };
+        });
+
+    visBaseEdges = payload.edges
+        .filter((e) => !foldedChildIds.has(e.u) && !foldedChildIds.has(e.v) && !(e.data?.type || '').includes('Composition'))
+        .map((e, idx) => {
+            const type = e.data.type || "";
+            const access = (e.data.access || "").toLowerCase();
+            const subclass = e.data.subclass || "";
+            let label = "", dashes = false;
+
+            if (type.includes('Access')) {
+                if (subclass === 'Controls') { label = "Controls"; dashes = true; }
+                else if (subclass === 'Enables') { label = "Enables"; dashes = true; }
+                else if (subclass === 'Situational') { label = access === 'read' ? "Situational Input" : "Situational Output"; dashes = true; }
+                else if (access === 'read') label = "Input";
+                else if (access === 'write') label = "Output";
+            } else {
+                label = type.replace("Relationship", "").replace("archimate:", "");
+                if (label === 'Specialization') dashes = true;
+            }
+
+            return {
+                id: `e_${idx}_${e.u}_${e.v}`,
+                from: e.u,
+                to: e.v,
+                label,
+                dashes,
+                width: 1.5,
+                arrows: 'to',
+                font: { size: 11, align: 'middle', strokeWidth: 3, strokeColor: '#ffffff', color: '#444444' },
+                color: { color: dashes ? '#999999' : '#666666', highlight: '#222222' }
+            };
+        });
 
     visNetworkInstance = new Network(visDiv.value, { nodes: [...visBaseNodes], edges: [...visBaseEdges] }, {
-        nodes: {
-            widthConstraint: { maximum: 180 }
-        },
         edges: {
             smooth: { enabled: true, type: 'dynamic' }
         },
@@ -863,23 +915,14 @@ const renderVisJs = (payload) => {
             enabled: true,
             solver: 'forceAtlas2Based',
             forceAtlas2Based: {
-                gravitationalConstant: -90,
+                gravitationalConstant: -105,
                 centralGravity: 0.01,
-                springLength: 165,
-                springConstant: 0.06,
-                avoidOverlap: 0.65
+                springLength: 175,
+                springConstant: 0.055,
+                avoidOverlap: 0.8
             },
             stabilization: {
-                iterations: 200
-            }
-        },
-        layout: {
-            hierarchical: {
-                enabled: payload.renderSubgraphs,
-                direction: 'UD',
-                sortMethod: 'directed',
-                nodeSpacing: 190,
-                levelSeparation: 140
+                iterations: 220
             }
         }
     });
@@ -905,35 +948,50 @@ const render3D = (payload) => {
     const gActive = graphData.gActive();
     const layered = store.threeOptions.isLayered;
 
-    const nodes = Array.from(payload.nodes).map(id => {
+    // Exclude internal BusinessProcess activities from 3D scene (shown in Info Panel on click instead)
+    const excluded3DIds = new Set();
+    Array.from(payload.nodes).forEach((id) => {
         const type = gActive.getNodeAttribute(id, 'type') || '';
-        const isProc = type.includes('BusinessFunction') || type.includes('BusinessProcess');
-        const isHighlighted = payload.highlightedNodes && payload.highlightedNodes.has(id);
-        const name = payload.customLabels[id] || gActive.getNodeAttribute(id, 'name') || 'Unknown';
-        const group = isProc ? getProcessGroup(name) : 'Business Objects';
-
-        const nodeObj = {
-            id,
-            name,
-            group,
-            isProc,
-            isHighlighted,
-            val: isHighlighted ? 12 : (isProc ? 6 : 3),
-            color: isHighlighted ? '#D79B00' : (isProc ? '#D6B656' : '#82B366')
-        };
-
-        if (layered && isProc) {
-            nodeObj.fy = groupLayerY[group] ?? -170;
+        if (type.includes('BusinessProcess')) {
+            excluded3DIds.add(id);
         }
-
-        return nodeObj;
     });
+
+    const nodes = Array.from(payload.nodes)
+        .filter((id) => !excluded3DIds.has(id))
+        .map(id => {
+            const type = gActive.getNodeAttribute(id, 'type') || '';
+            const isProc = type.includes('BusinessFunction');
+            const isHighlighted = payload.highlightedNodes && payload.highlightedNodes.has(id);
+            const name = payload.customLabels[id] || gActive.getNodeAttribute(id, 'name') || 'Unknown';
+            const group = isProc ? getProcessGroup(name) : 'Business Objects';
+
+            const nodeObj = {
+                id,
+                name,
+                group,
+                isProc,
+                isHighlighted,
+                val: isHighlighted ? 12 : (isProc ? 6 : 3),
+                color: isHighlighted ? '#D79B00' : (isProc ? '#D6B656' : '#82B366')
+            };
+
+            if (layered && isProc) {
+                nodeObj.fy = groupLayerY[group] ?? -170;
+            }
+
+            return nodeObj;
+        });
+
+    const filteredEdges = payload.edges.filter(
+        (e) => !excluded3DIds.has(e.u) && !excluded3DIds.has(e.v) && !(e.data?.type || '').includes('Composition')
+    );
 
     const nodeById = new Map(nodes.map((n) => [n.id, n]));
 
     if (layered) {
         const neighbourProcessYs = new Map();
-        payload.edges.forEach((e) => {
+        filteredEdges.forEach((e) => {
             const nU = nodeById.get(e.u);
             const nV = nodeById.get(e.v);
             if (!nU || !nV) return;
@@ -972,7 +1030,7 @@ const render3D = (payload) => {
     const maxInLayer = Math.max(1, ...Object.values(layerCounts));
     const planeSize = Math.max(460, Math.min(760, 320 + maxInLayer * 34));
 
-    const links = payload.edges.map(e => {
+    const links = filteredEdges.map(e => {
         const type = e.data.type || '';
         const subclass = e.data.subclass || '';
         const access = (e.data.access || '').toLowerCase();
@@ -1260,6 +1318,7 @@ onUnmounted(() => {
     </div>
 
     <!-- Whole-Model Workspaces -->
+    <FullModel3D v-else-if="store.activeView === 'model3d'" />
     <N2Matrix v-else-if="store.activeView === 'n2'" />
     <InsightsView v-else-if="['checklist', 'hotspots', 'dictionary'].includes(store.activeView)" />
 
@@ -1341,9 +1400,9 @@ onUnmounted(() => {
                   <input type="checkbox" v-model="store.threeOptions.showLabels" />
                   Labels
               </label>
-              <label class="toolbar-toggle" title="Separate ISO 15288 process groups onto visual horizontal planes">
+              <label class="toolbar-toggle" title="Organise processes onto ISO 15288 Process Group planes">
                   <input type="checkbox" v-model="store.threeOptions.isLayered" />
-                  ISO Layers
+                  Process Groups
               </label>
           </template>
       </div>
@@ -1412,11 +1471,11 @@ onUnmounted(() => {
                       {{ pinnedNodeIds.size > 0 ? `${pinnedNodeIds.size} node(s) highlighted` : '0 nodes highlighted' }}
                   </span>
                   <button
-                  class="clear-pins-btn"
-                  :disabled="pinnedNodeIds.size === 0"
-                  @click="clearPinnedNodes"
+                    class="clear-pins-btn"
+                    :disabled="pinnedNodeIds.size === 0"
+                    @click="clearPinnedNodes"
                   >
-                  Clear all
+                    Clear all
                   </button>
               </div>
 
@@ -1457,12 +1516,19 @@ onUnmounted(() => {
           </div>
       </div>
 
-      <!-- Info Panel (Node details) -->
+      <!-- Info Panel (Node details + Internal Activities for processes) -->
       <div v-if="selectedNodeInfo" class="info-panel">
           <button class="info-close-btn" @click="selectedNodeInfo = null" aria-label="Close">&times;</button>
           <span class="info-group-tag">{{ selectedNodeInfo.group }}</span>
           <h3>{{ selectedNodeInfo.name }}</h3>
           <p>{{ selectedNodeInfo.doc }}</p>
+
+          <div v-if="selectedNodeInfo.activities && selectedNodeInfo.activities.length > 0" class="info-activities">
+              <h4>Internal Activities ({{ selectedNodeInfo.activities.length }})</h4>
+              <ul>
+                  <li v-for="(act, idx) in selectedNodeInfo.activities" :key="idx">{{ act }}</li>
+              </ul>
+          </div>
       </div>
 
       <!-- Universal Legend -->
@@ -1498,17 +1564,7 @@ onUnmounted(() => {
 
 .render-div { width: 100%; height: 100%; overflow: hidden; outline: none; }
 
-/* Mermaid zero-redraw highlight & zoom pulse */
-.render-div :deep(.node.report-pinned rect),
-.render-div :deep(.node.report-pinned polygon),
-.render-div :deep(.node.report-pinned path),
-.render-div :deep(.cluster.report-pinned rect) {
-    stroke: #D81B60 !important;
-    stroke-width: 4.5px !important;
-    fill: #FCE4EC !important;
-    filter: drop-shadow(0 0 6px rgba(216, 27, 96, 0.55));
-}
-
+/* Mermaid zoom pulse */
 .render-div :deep(.node.report-pulse),
 .render-div :deep(.cluster.report-pulse) {
     animation: mermaidNodePulse 0.75s ease-in-out 2;
@@ -1686,7 +1742,6 @@ onUnmounted(() => {
 .clear-pins-btn:disabled {
     background: #eef2f6; color: #94a3b8; cursor: default; opacity: 0.7;
 }
-.clear-pins-btn:hover { background: #F8BBD0; }
 
 .summary-section { margin-bottom: 12px; }
 .sec-title { margin: 0 0 6px 0; font-size: 12px; text-transform: uppercase; letter-spacing: 0.3px; }
@@ -1739,6 +1794,17 @@ onUnmounted(() => {
 }
 .info-panel h3 { margin: 0 0 12px 0; padding-right: 28px; font-size: 18px; color: #333; }
 .info-panel p { margin: 0; font-size: 14px; color: #555; line-height: 1.6; }
+.info-activities {
+    margin-top: 16px; padding-top: 12px; border-top: 1px solid #e2e8f0;
+}
+.info-activities h4 {
+    margin: 0 0 8px 0; font-size: 12px; text-transform: uppercase;
+    letter-spacing: 0.4px; color: #475569;
+}
+.info-activities ul {
+    margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 4px;
+    font-size: 13px; color: #334155;
+}
 .info-close-btn {
     position: absolute; top: 12px; right: 12px;
     display: flex; align-items: center; justify-content: center;
