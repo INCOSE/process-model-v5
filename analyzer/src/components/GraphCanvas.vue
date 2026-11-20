@@ -7,7 +7,6 @@ import ForceGraph3D from '3d-force-graph';
 import * as THREE from 'three';
 
 import { store, graphData, applyModelXml } from '../store/graphStore.js';
-import { loadAndParseXML } from '../core/xmlParser.js';
 import { graphToMermaidAndData } from '../renderers/mermaidGenerator.js';
 
 const fileInput = ref(null);
@@ -85,8 +84,12 @@ const renderMermaid = async (payload) => {
             bindFunctions(mermaidDiv.value);
         }
         
-        svgElement.style.width = "100%"; 
-        svgElement.style.height = "100%";
+        svgElement.removeAttribute('width');
+        svgElement.removeAttribute('height');
+        svgElement.style.maxWidth = 'none';
+        svgElement.style.width = '100%';
+        svgElement.style.height = '100%';
+        svgElement.style.display = 'block';
         
         panZoomInstance = svgPanZoom(svgElement, { 
             zoomEnabled: true, 
@@ -95,6 +98,10 @@ const renderMermaid = async (payload) => {
             center: true,
             preventMouseEventsDefault: false // Разрешает прохождение кликов до SVG
         });
+
+        panZoomInstance.resize();
+        panZoomInstance.fit();
+        panZoomInstance.center();
     } catch (error) { 
         errorContent.value = error.message; 
     }
@@ -293,11 +300,15 @@ const exportImage = () => {
     }
 };
 
-// 3d canvas redraw triggered by window resize
+// Redraw / refit canvas on window resize
 window.addEventListener('resize', () => {
     if (store.activeEngine === '3d' && threeGraphInstance && threeDiv.value) {
         threeGraphInstance.width(threeDiv.value.clientWidth);
         threeGraphInstance.height(threeDiv.value.clientHeight);
+    } else if (store.activeEngine === 'mermaid' && panZoomInstance) {
+        panZoomInstance.resize();
+        panZoomInstance.fit();
+        panZoomInstance.center();
     }
 });
 </script>
@@ -366,7 +377,7 @@ window.addEventListener('resize', () => {
 
 <style scoped>
 .canvas-container { width: 100%; height: 100%; position: relative; background: #ffffff; overflow: hidden; }
-.render-div { width: 100%; height: 100vh; outline: none; }
+.render-div { width: 100%; height: 100%; overflow: hidden; outline: none; }
 
 .upload-overlay { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); text-align: center; background: white; padding: 40px; border-radius: 12px; box-shadow: 0 10px 25px rgba(0,0,0,0.1); border: 1px solid #e0e0e0; z-index: 10; }
 .upload-btn { background: #007bff; color: white; border: none; padding: 10px 20px; border-radius: 6px; font-size: 16px; cursor: pointer; margin-top: 15px; }

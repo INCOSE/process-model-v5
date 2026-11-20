@@ -2,7 +2,6 @@
 import { ref, computed, watch } from 'vue';
 import { store, graphData, applyModelXml, loadDefaultModel } from '../store/graphStore.js';
 import { CaseRegistry, casesList } from '../cases/caseRegistry.js';
-import { graphToMermaidAndData } from '../renderers/mermaidGenerator.js';
 import SearchableSelect from './SearchableSelect.vue';
 
 const customFileInput = ref(null);
@@ -167,14 +166,10 @@ const runAnalysis = () => {
   store.renderPayload = {
     nodes: result.nodes,
     edges: result.edges,
-    highlightedNodes: result.highlightedNodes || new Set(), // <--- Добавить это
+    highlightedNodes: result.highlightedNodes || new Set(),
     renderSubgraphs: result.renderSubgraphs || false,
     customLabels: result.customLabels || {}
   };
-  
-  // 4. Save to store (GraphCanvas will detect this change and draw it)
-  store.mermaidCode = mermaidCode;
-  store.nodesData = nodesData;
 };
 
 const clearDiagram = () => {
@@ -266,7 +261,7 @@ const exportJson = () => {
 
     <hr class="divider" />
 
-<!-- 2. Global Settings -->
+    <!-- 2. Global Settings -->
     <div class="section">
       <label class="section-title">Global Settings:</label>
       <label class="checkbox-label">
@@ -372,7 +367,13 @@ const exportJson = () => {
 </template>
 
 <style scoped>
-.sidebar-content { padding: 20px; overflow-y: auto; flex-grow: 1; }
+.sidebar-content {
+  padding: 20px 20px 40px 20px;
+  overflow-y: auto;
+  overflow-x: hidden;
+  flex: 1 1 0;
+  min-height: 0;
+}
 .section { display: flex; flex-direction: column; gap: 12px; }
 .section-title { font-weight: 600; font-size: 0.9rem; color: #555; }
 .description-text { font-size: 0.8rem; color: #666; margin: 0; font-style: italic; }

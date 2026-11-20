@@ -27,3 +27,4 @@ analyzer/dist-ssr
 *.sw?
 
 repo_context.txt
+analyzer/project_bundle.txt

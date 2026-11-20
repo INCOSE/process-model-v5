@@ -57,33 +57,50 @@ const toggleMenu = () => {
   --border: #e0e0e0;
 }
 
-body {
+*, *::before, *::after {
+  box-sizing: border-box;
+}
+
+html, body, #app {
   margin: 0;
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-  background-color: var(--bg-color);
-  color: var(--text-main);
+  padding: 0;
+  width: 100%;
+  height: 100%;
   overflow: hidden; /* Prevent page-level scroll */
 }
 
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  background-color: var(--bg-color);
+  color: var(--text-main);
+}
+
 .app-layout {
+  position: fixed;
+  inset: 0;
   display: flex;
-  height: 100vh;
-  width: 100vw;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
 }
 
 .sidebar {
   width: 350px;
+  height: 100%;
+  min-height: 0;
   flex-shrink: 0; /* not shrinkable */
   background: var(--sidebar-bg);
   border-right: 1px solid var(--border);
   display: flex;
   flex-direction: column;
+  overflow: hidden;
   transition: transform 0.3s ease;
   z-index: 100;
   box-shadow: 2px 0 8px rgba(0,0,0,0.05);
 }
 
 .sidebar-header {
+  flex-shrink: 0;
   padding: 15px 20px;
   border-bottom: 1px solid var(--border);
   display: flex;
@@ -105,9 +122,12 @@ body {
 }
 
 .canvas-area {
-  flex-grow: 1;
+  flex: 1 1 0;
   min-width: 0; /* canvas cannot go beyond the screen */
+  min-height: 0;
+  height: 100%;
   position: relative;
+  overflow: hidden;
   background: #ffffff;
 }
 
@@ -136,6 +156,9 @@ body {
   
   .sidebar {
     position: fixed;
+    top: 0;
+    left: 0;
+    bottom: 0;
     height: 100%;
     transform: translateX(-100%);
   }
