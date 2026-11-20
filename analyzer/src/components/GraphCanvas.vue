@@ -21,7 +21,20 @@ let panZoomInstance = null;
 let visNetworkInstance = null;
 let threeGraphInstance = null;
 
-mermaid.initialize({ startOnLoad: false, theme: 'default', securityLevel: 'loose' });
+mermaid.initialize({
+    startOnLoad: false,
+    theme: 'default',
+    securityLevel: 'loose',
+    flowchart: {
+        htmlLabels: true,
+        padding: 15,
+        wrappingWidth: 220
+    },
+    themeVariables: {
+        fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif',
+        fontSize: '14px'
+    }
+});
 
 // --- UNIVERSAL NODE CLICK HANDLER ---
 const showNodeInfo = (rawId) => {
@@ -35,6 +48,13 @@ const showNodeInfo = (rawId) => {
             doc: gActive.getNodeAttribute(originalId, 'doc') || 'Description is missing in the model.'
         };
     } else {
+        selectedNodeInfo.value = null;
+    }
+};
+
+// Close info panel when clicking on empty Mermaid canvas background
+const handleMermaidBackgroundClick = (event) => {
+    if (!event.target.closest('.node, .cluster')) {
         selectedNodeInfo.value = null;
     }
 };
@@ -343,13 +363,18 @@ window.addEventListener('resize', () => {
     </div>
 
     <!-- Render Targets -->
-    <div v-if="store.activeEngine === 'mermaid' && store.renderPayload.nodes.size > 0" ref="mermaidDiv" class="render-div"></div>
+    <div
+      v-if="store.activeEngine === 'mermaid' && store.renderPayload.nodes.size > 0"
+      ref="mermaidDiv"
+      class="render-div"
+      @click="handleMermaidBackgroundClick"
+    ></div>
     <div v-if="store.activeEngine === 'visjs' && store.renderPayload.nodes.size > 0" ref="visDiv" class="render-div"></div>
     <div v-if="store.activeEngine === '3d' && store.renderPayload.nodes.size > 0" ref="threeDiv" class="render-div"></div>
     
     <!-- Info Panel (Node details) -->
     <div v-if="selectedNodeInfo" class="info-panel">
-        <button class="close-btn" @click="selectedNodeInfo = null">&times;</button>
+        <button class="info-close-btn" @click="selectedNodeInfo = null" aria-label="Close">&times;</button>
         <h3>{{ selectedNodeInfo.name }}</h3>
         <p>{{ selectedNodeInfo.doc }}</p>
     </div>
@@ -388,10 +413,17 @@ window.addEventListener('resize', () => {
     background: #ffffff; border: 1px solid #e0e0e0; border-radius: 8px;
     box-shadow: 0 10px 25px rgba(0,0,0,0.2); padding: 20px; overflow-y: auto; z-index: 1000;
 }
-.info-panel h3 { margin: 0 0 15px 0; font-size: 18px; color: #333; }
+.info-panel h3 { margin: 0 0 15px 0; padding-right: 28px; font-size: 18px; color: #333; }
 .info-panel p { margin: 0; font-size: 14px; color: #555; line-height: 1.6; }
-.close-btn { position: absolute; top: 15px; right: 15px; cursor: pointer; font-size: 24px; color: #aaa; background: none; border: none; padding: 0; line-height: 1; }
-.close-btn:hover { color: #333; }
+.info-close-btn {
+    position: absolute; top: 12px; right: 12px;
+    display: flex; align-items: center; justify-content: center;
+    width: 28px; height: 28px; border-radius: 4px;
+    cursor: pointer; font-size: 22px; color: #888;
+    background: none; border: none; padding: 0; line-height: 1;
+    transition: background 0.15s, color 0.15s;
+}
+.info-close-btn:hover { background: #f0f0f0; color: #222; }
 
 /* Legend Styles */
 .legend-panel {

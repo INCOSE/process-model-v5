@@ -4,6 +4,26 @@
  * Note: Comments are written in British English.
  */
 
+function wrapLabel(text, maxLineLength = 24) {
+    if (!text || text.length <= maxLineLength) return text;
+    const words = text.split(/\s+/);
+    const lines = [];
+    let currentLine = '';
+
+    for (const word of words) {
+        if (!currentLine) {
+            currentLine = word;
+        } else if ((currentLine + ' ' + word).length <= maxLineLength) {
+            currentLine += ' ' + word;
+        } else {
+            lines.push(currentLine);
+            currentLine = word;
+        }
+    }
+    if (currentLine) lines.push(currentLine);
+    return lines.join('<br/>');
+}
+
 export function graphToMermaidAndData(
     gActive,
     nodesToInclude,
@@ -88,10 +108,11 @@ export function graphToMermaidAndData(
             children.forEach(cId => {
                 const cNameRaw = customLabels[cId] || gActive.getNodeAttribute(cId, 'name') || 'Unknown';
                 const cName = cNameRaw.replace(/["']/g, "'");
+                const cLabel = wrapLabel(cName);
                 const mCid = cId.replace(/-/g, "_");
                 const cDoc = (gActive.getNodeAttribute(cId, 'doc') || '').replace(/["']/g, "'").replace(/\n/g, " ");
 
-                lines.push(`        ${mCid}("${cName}"):::process`);
+                lines.push(`        ${mCid}("${cLabel}"):::process`);
                 lines.push(`        click ${mCid} call handleNodeClick()`);
                 nodesData[mCid] = { name: cName, doc: cDoc };
 
@@ -121,10 +142,11 @@ export function graphToMermaidAndData(
 
         if (nType.includes('BusinessProcess') || nType.includes('BusinessFunction')) {
             const pClass = isHighlighted ? 'centralProcess' : 'process';
-            const displayLabel = isHighlighted ? `★ ${name}` : name;
+            const displayLabel = wrapLabel(isHighlighted ? `★ ${name}` : name);
             lines.push(`    ${mId}("${displayLabel}"):::${pClass}`);
         } else {
-            lines.push(`    ${mId}["${name}"]:::object`);
+            const wrappedName = wrapLabel(name);
+            lines.push(`    ${mId}["${wrappedName}"]:::object`);
         }
         lines.push(`    click ${mId} call handleNodeClick()`);
         nodesData[mId] = { name, doc };
