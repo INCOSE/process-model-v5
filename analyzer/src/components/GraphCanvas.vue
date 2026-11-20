@@ -1,5 +1,5 @@
 <script setup>
-import { ref, watch, nextTick, onMounted, onUnmounted } from 'vue';
+import { ref, computed, watch, nextTick, onMounted, onUnmounted } from 'vue';
 import mermaid from 'mermaid';
 import svgPanZoom from 'svg-pan-zoom';
 import { Network } from 'vis-network';
@@ -9,6 +9,8 @@ import * as THREE from 'three';
 import { store, graphData, applyModelXml } from '../store/graphStore.js';
 import { graphToMermaidAndData } from '../renderers/mermaidGenerator.js';
 import { getProcessGroup, groupLayerY } from '../core/iso15288Groups.js';
+import { buildFlowSteps } from '../core/flowStepper.js';
+import N2Matrix from './N2Matrix.vue';
 
 const fileInput = ref(null);
 const mermaidDiv = ref(null);
@@ -22,8 +24,22 @@ const selectedNodeInfo = ref(null);
 const show3DLabels = ref(true);
 const is3DLayered = ref(false);
 
+// Step-by-step Flow Player state
+const stepperActive = ref(false);
+const flowSteps = ref([]);
+const currentStepIdx = ref(0);
+const isPlaying = ref(false);
+let playTimer = null;
+
+const currentStepState = computed(() => {
+    if (!stepperActive.value || flowSteps.value.length === 0) return null;
+    return flowSteps.value[currentStepIdx.value] || null;
+});
+
 let panZoomInstance = null;
 let visNetworkInstance = null;
+let visBaseNodes = [];
+let visBaseEdges = [];
 let threeGraphInstance = null;
 
 mermaid.initialize({
@@ -69,6 +85,64 @@ const handleMermaidBackgroundClick = (event) => {
 };
 
 window.handleNodeClick = showNodeInfo;
+
+// --- STEPPER CONTROLS ---
+const stopAutoPlay = () => {
+    isPlaying.value = false;
+    if (playTimer) {
+        clearInterval(playTimer);
+        playTimer = null;
+    }
+};
+
+const toggleStepper = () => {
+    if (stepperActive.value) {
+        stopAutoPlay();
+        stepperActive.value = false;
+    } else {
+        flowSteps.value = buildFlowSteps(graphData.gActive(), store.renderPayload);
+        if (flowSteps.value.length > 0) {
+            currentStepIdx.value = 0;
+            stepperActive.value = true;
+        }
+    }
+};
+
+const prevStep = () => {
+    stopAutoPlay();
+    if (currentStepIdx.value > 0) currentStepIdx.value--;
+};
+
+const nextStep = () => {
+    if (currentStepIdx.value < flowSteps.value.length - 1) {
+        currentStepIdx.value++;
+    } else {
+        stopAutoPlay();
+    }
+};
+
+const resetStepper = () => {
+    stopAutoPlay();
+    currentStepIdx.value = 0;
+};
+
+const toggleAutoPlay = () => {
+    if (isPlaying.value) {
+        stopAutoPlay();
+    } else {
+        if (currentStepIdx.value >= flowSteps.value.length - 1) {
+            currentStepIdx.value = 0;
+        }
+        isPlaying.value = true;
+        playTimer = setInterval(() => {
+            if (currentStepIdx.value < flowSteps.value.length - 1) {
+                currentStepIdx.value++;
+            } else {
+                stopAutoPlay();
+            }
+        }, 1400);
+    }
+};
 
 // --- CLEANUP HELPERS ---
 const destroyRenderers = () => {
@@ -134,7 +208,6 @@ const createTextSprite = (node) => {
     canvas.width = Math.ceil(maxLineWidth + padX * 2);
     canvas.height = Math.ceil(lines.length * lineHeight + padY * 2);
 
-    // Draw rounded pill background for legibility
     const r = 8;
     const w = canvas.width;
     const h = canvas.height;
@@ -156,7 +229,6 @@ const createTextSprite = (node) => {
     ctx.fill();
     ctx.stroke();
 
-    // Draw label text
     ctx.font = fontStr;
     ctx.fillStyle = node.isHighlighted ? '#8A5A00' : '#2c3e50';
     ctx.textAlign = 'center';
@@ -183,8 +255,109 @@ const createTextSprite = (node) => {
     return sprite;
 };
 
+// --- APPLY STEP STATE TO VIS.JS & 3D IN-PLACE ---
+const applyVisStepState = (stepState) => {
+    if (!visNetworkInstance) return;
+    const nodesDS = visNetworkInstance.body.data.nodes;
+    const edgesDS = visNetworkInstance.body.data.edges;
+
+    const updatedNodes = visBaseNodes.map((n) => {
+        if (!stepState) return n;
+        if (stepState.activeNodes.has(n.id)) {
+            return {
+                ...n,
+                color: { background: '#E3F2FD', border: '#1565C0' },
+                borderWidth: 3.5,
+                opacity: 1
+            };
+        }
+        if (stepState.visitedNodes.has(n.id)) {
+            return { ...n, opacity: 1 };
+        }
+        return {
+            ...n,
+            color: { background: '#f3f4f6', border: '#d1d5db' },
+            font: { ...n.font, color: '#9ca3af' },
+            opacity: 0.3
+        };
+    });
+
+    const updatedEdges = visBaseEdges.map((e) => {
+        if (!stepState) return e;
+        const key = `${e.from}___${e.to}`;
+        if (stepState.activeEdges.has(key)) {
+            return {
+                ...e,
+                width: 3.5,
+                color: { color: '#1565C0', highlight: '#0D47A1' },
+                font: { ...e.font, color: '#1565C0' }
+            };
+        }
+        if (stepState.visitedEdges.has(key)) {
+            return { ...e, width: 1.5 };
+        }
+        return {
+            ...e,
+            width: 1,
+            color: { color: 'rgba(180,180,180,0.28)' },
+            font: { ...e.font, color: 'rgba(160,160,160,0.35)' }
+        };
+    });
+
+    nodesDS.update(updatedNodes);
+    edgesDS.update(updatedEdges);
+};
+
+const apply3DStepState = (stepState) => {
+    if (!threeGraphInstance) return;
+
+    threeGraphInstance
+        .nodeColor((node) => {
+            if (!stepState) return node.color;
+            if (stepState.activeNodes.has(node.id)) return '#1565C0';
+            if (stepState.visitedNodes.has(node.id)) return node.color;
+            return '#d8dde3';
+        })
+        .linkColor((link) => {
+            const u = typeof link.source === 'object' ? link.source.id : link.source;
+            const v = typeof link.target === 'object' ? link.target.id : link.target;
+            const key = `${u}___${v}`;
+            if (!stepState) return link.isSystemic ? '#b0b8c1' : '#7a869a';
+            if (stepState.activeEdges.has(key)) return '#1565C0';
+            if (stepState.visitedEdges.has(key)) return '#7a869a';
+            return '#e5e7eb';
+        })
+        .linkWidth((link) => {
+            const u = typeof link.source === 'object' ? link.source.id : link.source;
+            const v = typeof link.target === 'object' ? link.target.id : link.target;
+            const key = `${u}___${v}`;
+            if (!stepState) return link.isSystemic ? 0.8 : 1.4;
+            if (stepState.activeEdges.has(key)) return 3;
+            if (stepState.visitedEdges.has(key)) return 1.2;
+            return 0.4;
+        })
+        .linkDirectionalParticles((link) => {
+            const u = typeof link.source === 'object' ? link.source.id : link.source;
+            const v = typeof link.target === 'object' ? link.target.id : link.target;
+            const key = `${u}___${v}`;
+            if (!stepState) return link.isSystemic ? 1 : 2;
+            return stepState.activeEdges.has(key) ? 4 : 0;
+        })
+        .linkDirectionalParticleColor((link) => {
+            if (!stepState) return link.isSystemic ? '#9aa5b1' : '#4CAF50';
+            return '#1565C0';
+        });
+};
+
 // --- RENDERERS ---
-const renderMermaid = async (payload) => {
+const renderMermaid = async (payload, preserveView = false) => {
+    let savedZoom = null;
+    let savedPan = null;
+    if (preserveView && panZoomInstance) {
+        savedZoom = panZoomInstance.getZoom();
+        savedPan = panZoomInstance.getPan();
+    }
+
     destroyRenderers();
     if (!mermaidDiv.value) return;
     mermaidDiv.value.innerHTML = '';
@@ -195,13 +368,16 @@ const renderMermaid = async (payload) => {
         payload.edges,
         payload.renderSubgraphs,
         payload.customLabels,
-        payload.highlightedNodes
+        payload.highlightedNodes,
+        currentStepState.value
     );
     if (!mermaidCode) return;
 
     try {
-        const { svg, bindFunctions } = await mermaid.render('mermaid-svg-element', mermaidCode);
+        const renderId = `mermaid-svg-${Date.now()}`;
+        const { svg, bindFunctions } = await mermaid.render(renderId, mermaidCode);
 
+        if (!mermaidDiv.value) return;
         mermaidDiv.value.innerHTML = svg;
         const svgElement = mermaidDiv.value.querySelector('svg');
 
@@ -225,8 +401,13 @@ const renderMermaid = async (payload) => {
         });
 
         panZoomInstance.resize();
-        panZoomInstance.fit();
-        panZoomInstance.center();
+        if (preserveView && savedZoom !== null && savedPan !== null) {
+            panZoomInstance.zoom(savedZoom);
+            panZoomInstance.pan(savedPan);
+        } else {
+            panZoomInstance.fit();
+            panZoomInstance.center();
+        }
     } catch (error) {
         errorContent.value = error.message;
     }
@@ -237,7 +418,7 @@ const renderVisJs = (payload) => {
     if (!visDiv.value) return;
     const gActive = graphData.gActive();
 
-    const nodes = Array.from(payload.nodes).map(id => {
+    visBaseNodes = Array.from(payload.nodes).map(id => {
         const type = gActive.getNodeAttribute(id, 'type') || '';
         const isProc = type.includes('BusinessFunction') || type.includes('BusinessProcess');
         const isHighlighted = payload.highlightedNodes && payload.highlightedNodes.has(id);
@@ -251,13 +432,14 @@ const renderVisJs = (payload) => {
                 : (isProc
                     ? { background: '#FFF2CC', border: '#D6B656', highlight: { background: '#FFE8A3', border: '#B89635' } }
                     : { background: '#D5E8D4', border: '#82B366', highlight: { background: '#C0DFBE', border: '#5E8E45' } }),
-            font: { face: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif', size: isHighlighted ? 15 : 13, bold: isHighlighted },
+            font: { face: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif', size: isHighlighted ? 15 : 13, bold: isHighlighted, color: '#222222' },
             borderWidth: isHighlighted ? 3 : 1.5,
-            margin: 10
+            margin: 10,
+            opacity: 1
         };
     });
 
-    const edges = payload.edges.map(e => {
+    visBaseEdges = payload.edges.map((e, idx) => {
         const type = e.data.type || "";
         const access = (e.data.access || "").toLowerCase();
         const subclass = e.data.subclass || "";
@@ -275,17 +457,19 @@ const renderVisJs = (payload) => {
         }
 
         return {
+            id: `e_${idx}_${e.u}_${e.v}`,
             from: e.u,
             to: e.v,
             label,
             dashes,
+            width: 1.5,
             arrows: 'to',
-            font: { size: 11, align: 'middle', strokeWidth: 3, strokeColor: '#ffffff' },
+            font: { size: 11, align: 'middle', strokeWidth: 3, strokeColor: '#ffffff', color: '#444444' },
             color: { color: dashes ? '#999999' : '#666666', highlight: '#222222' }
         };
     });
 
-    visNetworkInstance = new Network(visDiv.value, { nodes, edges }, {
+    visNetworkInstance = new Network(visDiv.value, { nodes: [...visBaseNodes], edges: [...visBaseEdges] }, {
         nodes: {
             widthConstraint: { maximum: 180 }
         },
@@ -328,6 +512,10 @@ const renderVisJs = (payload) => {
         if (params.nodes.length > 0) showNodeInfo(params.nodes[0]);
         else selectedNodeInfo.value = null;
     });
+
+    if (currentStepState.value) {
+        applyVisStepState(currentStepState.value);
+    }
 };
 
 const render3D = (payload) => {
@@ -353,8 +541,6 @@ const render3D = (payload) => {
             color: isHighlighted ? '#D79B00' : (isProc ? '#D6B656' : '#82B366')
         };
 
-        // Pin processes to vertical ISO 15288 strata when layered mode is enabled;
-        // artefacts float freely between their producing and consuming layers.
         if (is3DLayered.value && isProc) {
             nodeObj.fy = groupLayerY[group] ?? -150;
         }
@@ -418,11 +604,14 @@ const render3D = (payload) => {
             }
         });
 
-    // Tune physics for clean spacing between nodes
     const linkForce = threeGraphInstance.d3Force('link');
     if (linkForce) linkForce.distance(110);
     const chargeForce = threeGraphInstance.d3Force('charge');
     if (chargeForce) chargeForce.strength(-360);
+
+    if (currentStepState.value) {
+        apply3DStepState(currentStepState.value);
+    }
 };
 
 // --- VIEW CONTROLS ---
@@ -438,18 +627,40 @@ const fitView = () => {
     }
 };
 
+// Re-render when payload or engine changes
 watch(() => [store.renderPayload, store.activeEngine], async ([newPayload, engine]) => {
     selectedNodeInfo.value = null;
+    stopAutoPlay();
+    stepperActive.value = false;
+    flowSteps.value = [];
+
+    if (engine === 'n2') {
+        destroyRenderers();
+        return;
+    }
+
     if (!newPayload || newPayload.nodes.size === 0) {
         destroyRenderers();
         return;
     }
     errorContent.value = '';
     await nextTick();
-    if (engine === 'mermaid') await renderMermaid(newPayload);
+    if (engine === 'mermaid') await renderMermaid(newPayload, false);
     else if (engine === 'visjs') renderVisJs(newPayload);
     else if (engine === '3d') render3D(newPayload);
 }, { deep: true });
+
+// React to step changes without resetting layout
+watch([stepperActive, currentStepIdx], async () => {
+    if (store.renderPayload.nodes.size === 0) return;
+    if (store.activeEngine === 'mermaid') {
+        await renderMermaid(store.renderPayload, true);
+    } else if (store.activeEngine === 'visjs') {
+        applyVisStepState(currentStepState.value);
+    } else if (store.activeEngine === '3d') {
+        apply3DStepState(currentStepState.value);
+    }
+});
 
 // Re-render 3D when 3D view options change
 watch([show3DLabels, is3DLayered], async () => {
@@ -538,6 +749,7 @@ const handleResize = () => {
 onMounted(() => window.addEventListener('resize', handleResize));
 onUnmounted(() => {
     window.removeEventListener('resize', handleResize);
+    stopAutoPlay();
     destroyRenderers();
 });
 </script>
@@ -560,6 +772,9 @@ onUnmounted(() => {
         <button class="upload-btn" @click="fileInput.click()">📁 Choose File</button>
     </div>
 
+    <!-- N2 / DSM Matrix Engine (Works on Full Model even before running a case) -->
+    <N2Matrix v-else-if="store.activeEngine === 'n2'" />
+
     <!-- Empty State Guide (Model is loaded, no diagram generated yet) -->
     <div v-else-if="store.renderPayload.nodes.size === 0" class="empty-state">
         <div class="empty-icon">📐</div>
@@ -571,57 +786,83 @@ onUnmounted(() => {
         </div>
     </div>
 
-    <!-- Render Targets -->
-    <div
-      v-if="store.activeEngine === 'mermaid' && store.renderPayload.nodes.size > 0"
-      ref="mermaidDiv"
-      class="render-div"
-      @click="handleMermaidBackgroundClick"
-    ></div>
-    <div v-if="store.activeEngine === 'visjs' && store.renderPayload.nodes.size > 0" ref="visDiv" class="render-div"></div>
-    <div v-if="store.activeEngine === '3d' && store.renderPayload.nodes.size > 0" ref="threeDiv" class="render-div"></div>
+    <!-- Graph Render Targets -->
+    <template v-else>
+      <div
+        v-if="store.activeEngine === 'mermaid'"
+        ref="mermaidDiv"
+        class="render-div"
+        @click="handleMermaidBackgroundClick"
+      ></div>
+      <div v-if="store.activeEngine === 'visjs'" ref="visDiv" class="render-div"></div>
+      <div v-if="store.activeEngine === '3d'" ref="threeDiv" class="render-div"></div>
 
-    <!-- Top-Left Canvas Controls (3D toggles & Fit View) -->
-    <div v-if="store.renderPayload.nodes.size > 0" class="canvas-toolbar">
-        <button class="toolbar-btn" @click="fitView" title="Fit diagram to viewport">🎯 Fit View</button>
-        <template v-if="store.activeEngine === '3d'">
-            <label class="toolbar-toggle">
-                <input type="checkbox" v-model="show3DLabels" />
-                Labels
-            </label>
-            <label class="toolbar-toggle" title="Separate ISO 15288 process groups into vertical layers">
-                <input type="checkbox" v-model="is3DLayered" />
-                ISO Layers
-            </label>
-        </template>
-    </div>
+      <!-- Top-Left Canvas Controls -->
+      <div class="canvas-toolbar">
+          <button class="toolbar-btn" @click="fitView" title="Fit diagram to viewport">🎯 Fit View</button>
+          <button
+            v-if="store.renderPayload.edges.length > 0"
+            :class="['toolbar-btn', { active: stepperActive }]"
+            @click="toggleStepper"
+            title="Step through data flow wave by wave"
+          >
+            {{ stepperActive ? '⏹ Exit Stepper' : '▶ Step Flow' }}
+          </button>
+          <template v-if="store.activeEngine === '3d'">
+              <label class="toolbar-toggle">
+                  <input type="checkbox" v-model="show3DLabels" />
+                  Labels
+              </label>
+              <label class="toolbar-toggle" title="Separate ISO 15288 process groups into vertical layers">
+                  <input type="checkbox" v-model="is3DLayered" />
+                  ISO Layers
+              </label>
+          </template>
+      </div>
 
-    <!-- Info Panel (Node details) -->
-    <div v-if="selectedNodeInfo" class="info-panel">
-        <button class="info-close-btn" @click="selectedNodeInfo = null" aria-label="Close">&times;</button>
-        <span class="info-group-tag">{{ selectedNodeInfo.group }}</span>
-        <h3>{{ selectedNodeInfo.name }}</h3>
-        <p>{{ selectedNodeInfo.doc }}</p>
-    </div>
+      <!-- Step-by-Step Flow Player Bar -->
+      <div v-if="stepperActive && flowSteps.length > 0" class="stepper-bar">
+          <div class="stepper-controls">
+              <button class="step-btn" @click="resetStepper" title="Restart">⏮</button>
+              <button class="step-btn" @click="prevStep" :disabled="currentStepIdx === 0" title="Previous step">◀</button>
+              <button class="step-btn play-btn" @click="toggleAutoPlay" :title="isPlaying ? 'Pause' : 'Auto-play'">
+                  {{ isPlaying ? '⏸' : '▶' }}
+              </button>
+              <button class="step-btn" @click="nextStep" :disabled="currentStepIdx >= flowSteps.length - 1" title="Next step">▶</button>
+              <span class="step-counter">Step {{ currentStepIdx + 1 }} / {{ flowSteps.length }}</span>
+          </div>
+          <div class="step-summary" :title="currentStepState?.summary">
+              {{ currentStepState?.summary }}
+          </div>
+      </div>
 
-    <!-- Universal Legend -->
-    <div v-if="store.renderPayload.nodes.size > 0" class="legend-panel">
-        <h4>Legend</h4>
-        <div class="legend-item"><span class="color-box process"></span> Process / Function</div>
-        <div class="legend-item"><span class="color-box object"></span> Object / Artifact</div>
-        <div class="legend-item"><span class="line solid"></span> Standard Flow</div>
-        <div class="legend-item"><span class="line dashed"></span> Systemic (Enables/Controls/Situational)</div>
-    </div>
+      <!-- Info Panel (Node details) -->
+      <div v-if="selectedNodeInfo" class="info-panel">
+          <button class="info-close-btn" @click="selectedNodeInfo = null" aria-label="Close">&times;</button>
+          <span class="info-group-tag">{{ selectedNodeInfo.group }}</span>
+          <h3>{{ selectedNodeInfo.name }}</h3>
+          <p>{{ selectedNodeInfo.doc }}</p>
+      </div>
 
-    <div v-if="errorContent" class="error-panel">
-      <h4>❌ Diagram Rendering Error</h4>
-      <pre>{{ errorContent }}</pre>
-    </div>
+      <!-- Universal Legend -->
+      <div class="legend-panel">
+          <h4>Legend</h4>
+          <div class="legend-item"><span class="color-box process"></span> Process / Function</div>
+          <div class="legend-item"><span class="color-box object"></span> Object / Artifact</div>
+          <div class="legend-item"><span class="line solid"></span> Standard Flow</div>
+          <div class="legend-item"><span class="line dashed"></span> Systemic (Enables/Controls/Situational)</div>
+      </div>
 
-    <!-- Export Image Button -->
-    <div v-if="store.renderPayload.nodes.size > 0" class="export-image-container">
-      <button class="export-btn" @click="exportImage">📸 Export PNG</button>
-    </div>
+      <div v-if="errorContent" class="error-panel">
+        <h4>❌ Diagram Rendering Error</h4>
+        <pre>{{ errorContent }}</pre>
+      </div>
+
+      <!-- Export Image Button -->
+      <div class="export-image-container">
+        <button class="export-btn" @click="exportImage">📸 Export PNG</button>
+      </div>
+    </template>
   </div>
 </template>
 
@@ -641,13 +882,45 @@ onUnmounted(() => {
 .toolbar-btn {
     background: #ffffff; border: 1px solid #ccc; border-radius: 6px;
     padding: 5px 10px; font-size: 12px; font-weight: 600; color: #333;
-    cursor: pointer; transition: background 0.15s;
+    cursor: pointer; transition: all 0.15s;
 }
 .toolbar-btn:hover { background: #f0f2f5; }
+.toolbar-btn.active {
+    background: #1565C0; color: #ffffff; border-color: #1565C0;
+}
 .toolbar-toggle {
     display: flex; align-items: center; gap: 5px;
     font-size: 12px; font-weight: 500; color: #333;
     cursor: pointer; user-select: none; padding-left: 4px;
+}
+
+/* Stepper Bar */
+.stepper-bar {
+    position: absolute; bottom: 25px; left: 50%; transform: translateX(-50%);
+    z-index: 120; max-width: 520px; min-width: 320px;
+    background: rgba(255, 255, 255, 0.96);
+    border: 1px solid #1565C0; border-radius: 10px;
+    box-shadow: 0 6px 20px rgba(21, 101, 192, 0.18);
+    padding: 10px 16px; display: flex; flex-direction: column; gap: 6px;
+}
+.stepper-controls {
+    display: flex; align-items: center; justify-content: center; gap: 8px;
+}
+.step-btn {
+    width: 30px; height: 28px; border-radius: 6px;
+    border: 1px solid #cbd5e1; background: #f8fafc;
+    cursor: pointer; font-size: 12px; display: flex; align-items: center; justify-content: center;
+}
+.step-btn:hover:not(:disabled) { background: #e2e8f0; }
+.step-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+.step-btn.play-btn { background: #1565C0; color: #ffffff; border-color: #1565C0; }
+.step-btn.play-btn:hover { background: #0D47A1; }
+.step-counter {
+    font-size: 12px; font-weight: 700; color: #1565C0; margin-left: 6px;
+}
+.step-summary {
+    font-size: 12px; color: #334155; text-align: center;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 
 .upload-overlay { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); text-align: center; background: white; padding: 40px; border-radius: 12px; box-shadow: 0 10px 25px rgba(0,0,0,0.1); border: 1px solid #e0e0e0; z-index: 10; }

@@ -30,7 +30,8 @@ export function graphToMermaidAndData(
     edgesToInclude,
     renderSubgraphs = false,
     customLabels = {},
-    highlightedNodes = new Set()
+    highlightedNodes = new Set(),
+    stepState = null
 ) {
     if (!nodesToInclude || nodesToInclude.size === 0) {
         return { mermaidCode: "", nodesData: {} };
@@ -40,7 +41,9 @@ export function graphToMermaidAndData(
         "flowchart LR",
         "classDef process fill:#FFF2CC,stroke:#D6B656,stroke-width:2px,color:#000;",
         "classDef centralProcess fill:#FFE6CC,stroke:#D79B00,stroke-width:4px,color:#000,font-weight:bold;",
-        "classDef object fill:#D5E8D4,stroke:#82B366,stroke-width:2px,color:#000;"
+        "classDef object fill:#D5E8D4,stroke:#82B366,stroke-width:2px,color:#000;",
+        "classDef stepActive fill:#E3F2FD,stroke:#1565C0,stroke-width:4px,color:#0D47A1,font-weight:bold;",
+        "classDef stepDimmed fill:#F5F5F5,stroke:#DCDCDC,stroke-width:1px,color:#A0A0A0;"
     ];
 
     const nodesData = {};
@@ -53,7 +56,7 @@ export function graphToMermaidAndData(
             const { u, v, data } = edge;
             const uType = gActive.getNodeAttribute(u, 'type') || '';
             const vType = gActive.getNodeAttribute(v, 'type') || '';
-            
+
             if (data.type?.includes('Composition') && uType.includes('BusinessFunction') && vType.includes('BusinessProcess')) {
                 parentMap[v] = u;
             } else {
@@ -84,8 +87,17 @@ export function graphToMermaidAndData(
         if (index > -1) standaloneNodes.splice(index, 1);
     });
 
+    const resolveNodeClass = (nodeId, defaultClass) => {
+        if (!stepState) return defaultClass;
+        if (stepState.activeNodes.has(nodeId)) return 'stepActive';
+        if (stepState.visitedNodes.has(nodeId)) return defaultClass;
+        return 'stepDimmed';
+    };
+
     let linkIndex = 0;
     const greyLinkIndices = [];
+    const activeLinkIndices = [];
+    const dimmedLinkIndices = [];
 
     // --- Subgraph Generation ---
     Object.entries(childrenByParent).forEach(([pId, children]) => {
@@ -98,7 +110,11 @@ export function graphToMermaidAndData(
 
             lines.push(`    subgraph ${mPid} ["${pName}"]`);
             lines.push(`        direction TB`);
-            if (isHighlighted) {
+            if (stepState && stepState.activeNodes.has(pId)) {
+                lines.push(`        style ${mPid} fill:#E3F2FD,stroke:#1565C0,stroke-width:4px,color:#0D47A1,font-weight:bold;`);
+            } else if (stepState && !stepState.visitedNodes.has(pId)) {
+                lines.push(`        style ${mPid} fill:#F5F5F5,stroke:#DCDCDC,stroke-width:1px,color:#A0A0A0;`);
+            } else if (isHighlighted) {
                 lines.push(`        style ${mPid} fill:#FFE6CC,stroke:#D79B00,stroke-width:4px,color:#000,font-weight:bold;`);
             } else {
                 lines.push(`        style ${mPid} fill:#FFF2CC,stroke:#D6B656,stroke-width:2px,color:#000;`);
@@ -111,8 +127,9 @@ export function graphToMermaidAndData(
                 const cLabel = wrapLabel(cName);
                 const mCid = cId.replace(/-/g, "_");
                 const cDoc = (gActive.getNodeAttribute(cId, 'doc') || '').replace(/["']/g, "'").replace(/\n/g, " ");
+                const cClass = resolveNodeClass(cId, 'process');
 
-                lines.push(`        ${mCid}("${cLabel}"):::process`);
+                lines.push(`        ${mCid}("${cLabel}"):::${cClass}`);
                 lines.push(`        click ${mCid} call handleNodeClick()`);
                 nodesData[mCid] = { name: cName, doc: cDoc };
 
@@ -141,12 +158,14 @@ export function graphToMermaidAndData(
         const isHighlighted = highlightedNodes && highlightedNodes.has(nId);
 
         if (nType.includes('BusinessProcess') || nType.includes('BusinessFunction')) {
-            const pClass = isHighlighted ? 'centralProcess' : 'process';
+            const baseClass = isHighlighted ? 'centralProcess' : 'process';
+            const pClass = resolveNodeClass(nId, baseClass);
             const displayLabel = wrapLabel(isHighlighted ? `★ ${name}` : name);
             lines.push(`    ${mId}("${displayLabel}"):::${pClass}`);
         } else {
             const wrappedName = wrapLabel(name);
-            lines.push(`    ${mId}["${wrappedName}"]:::object`);
+            const oClass = resolveNodeClass(nId, 'object');
+            lines.push(`    ${mId}["${wrappedName}"]:::${oClass}`);
         }
         lines.push(`    click ${mId} call handleNodeClick()`);
         nodesData[mId] = { name, doc };
@@ -173,7 +192,7 @@ export function graphToMermaidAndData(
     filteredEdges.sort((a, b) => getSortWeight(a.data) - getSortWeight(b.data));
 
     const addedEdges = new Set();
-    
+
     // --- Link Generation ---
     filteredEdges.forEach(({ u, v, data }) => {
         const edgeKey = `${u}___${v}`;
@@ -190,7 +209,6 @@ export function graphToMermaidAndData(
                 if (subclass === 'Controls' || relName === 'Controls') label = "Controls";
                 else if (subclass === 'Enables' || relName === 'Enables') label = "Enables";
                 else if (subclass === 'Situational' || relName === 'Situational') {
-                    // Assign specific labels depending on access direction (Read / Write)
                     label = access === 'read' ? "Situational Input" : "Situational Output";
                 }
                 else if (access === 'read') label = "Input";
@@ -207,13 +225,20 @@ export function graphToMermaidAndData(
             } else if (eType.includes('Specialization')) {
                 lines.push(`    ${uId} -. "${label}" .-> ${vId}`);
             } else if (["Controls", "Situational Input", "Situational Output", "Enables"].includes(label)) {
-                // Systemic relationships are rendered as dashed lines
                 lines.push(`    ${uId} -.->|${label}| ${vId}`);
             } else {
                 lines.push(`    ${uId} -->|${label}| ${vId}`);
             }
 
-            if (["Controls", "Enables", "Situational Input", "Situational Output"].includes(label)) {
+            if (stepState) {
+                if (stepState.activeEdges.has(edgeKey)) {
+                    activeLinkIndices.push(linkIndex.toString());
+                } else if (!stepState.visitedEdges.has(edgeKey)) {
+                    dimmedLinkIndices.push(linkIndex.toString());
+                } else if (["Controls", "Enables", "Situational Input", "Situational Output"].includes(label)) {
+                    greyLinkIndices.push(linkIndex.toString());
+                }
+            } else if (["Controls", "Enables", "Situational Input", "Situational Output"].includes(label)) {
                 greyLinkIndices.push(linkIndex.toString());
             }
 
@@ -224,6 +249,12 @@ export function graphToMermaidAndData(
 
     if (greyLinkIndices.length > 0) {
         lines.push(`    linkStyle ${greyLinkIndices.join(',')} stroke:#808080,stroke-width:2px,color:#808080`);
+    }
+    if (dimmedLinkIndices.length > 0) {
+        lines.push(`    linkStyle ${dimmedLinkIndices.join(',')} stroke:#e0e0e0,stroke-width:1px,color:#c0c0c0`);
+    }
+    if (activeLinkIndices.length > 0) {
+        lines.push(`    linkStyle ${activeLinkIndices.join(',')} stroke:#1565C0,stroke-width:3.5px,color:#1565C0`);
     }
 
     return { mermaidCode: lines.join("\n"), nodesData };
@@ -237,7 +268,7 @@ export function getOriginalEdges(gGraph, path) {
     for (let i = 0; i < path.length - 1; i++) {
         const u = path[i];
         const v = path[i + 1];
-        
+
         if (gGraph.hasDirectedEdge(u, v) && gGraph.getDirectedEdgeAttribute(u, v, 'access') !== 'hierarchy_reverse') {
             edges.push({ u, v, data: gGraph.getDirectedEdgeAttributes(u, v) });
         } else if (gGraph.hasDirectedEdge(v, u) && gGraph.getDirectedEdgeAttribute(v, u, 'access') !== 'hierarchy_reverse') {
@@ -255,7 +286,7 @@ export function enforceBorderObjectRelations(gGraph, nodesSet, edgesList) {
         const type = gGraph.getNodeAttribute(n, 'type') || '';
         return !type.includes('BusinessProcess') && !type.includes('BusinessFunction');
     });
-    
+
     const existingEdges = new Set(edgesList.map(e => `${e.u}___${e.v}`));
 
     for (let i = 0; i < objectsInGraph.length; i++) {
@@ -278,6 +309,6 @@ export function enforceBorderObjectRelations(gGraph, nodesSet, edgesList) {
             }
         }
     }
-    
+
     return edgesList;
 }

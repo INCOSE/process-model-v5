@@ -4,7 +4,7 @@ export const Case2 = {
     id: 'case_2',
     name: 'Case 2: Shortest DATA FLOW path (Directed)',
     description: 'Finds the shortest valid data sequence (respecting Input/Output directions).',
-    
+
     inputs: [
         { key: 'p1', type: 'select', label: 'Process A (From):', optionsSource: 'processes' },
         { key: 'p2', type: 'select', label: 'Process B (To):', optionsSource: 'processes' }
@@ -32,7 +32,7 @@ export const Case2 = {
                 gActive.forEachOutEdge(currentNode, (edge, attr, u, neighbor) => {
                     if (foundPath || visited.has(neighbor)) return;
 
-                    // Process hierarchy ascent-decent prohibition
+                    // Process hierarchy ascent-descent prohibition
                     // allowing hierarchy following for objects (if useHierarchy is activated)
                     if (attr.access === 'hierarchy_reverse') {
                         const uType = gActive.getNodeAttribute(u, 'type') || '';
@@ -59,7 +59,7 @@ export const Case2 = {
 
         try {
             const path = findShortestDirectedDataFlow(p1, p2);
-            
+
             if (!path) {
                 return { error: true, message: "No valid DATA FLOW exists between these processes." };
             }
@@ -74,6 +74,7 @@ export const Case2 = {
             return {
                 nodes: nodesToDraw,
                 edges: edgesToDraw,
+                orderedPath: path,
                 success: true,
                 message: `Data flow path found! Length: ${path.length - 1} step(s).`
             };

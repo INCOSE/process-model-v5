@@ -28,7 +28,6 @@ const resetToDefault = async () => {
   await loadDefaultModel();
 };
 
-// Transforms raw dictionary into grouped objects array for SearchableSelect
 const getGroupedOptions = (sourceKey) => {
   const rawData = getDynamicOptions(sourceKey);
   if (!rawData) return [];
@@ -47,16 +46,13 @@ const getGroupedOptions = (sourceKey) => {
   });
 };
 
-// Get the currently active case configuration
 const activeCase = computed(() => CaseRegistry[store.activeCaseId]);
 
-// Reset case parameters when switching between different cases
 watch(() => store.activeCaseId, () => {
   store.caseParams = {};
   store.uiMessage = { text: '', type: '' };
 });
 
-// Clear selected inputs/outputs when Central Process changes (Case 7)
 watch(() => store.caseParams.pCenter, (newVal, oldVal) => {
   if (newVal !== oldVal && store.activeCaseId === 'case_7') {
     store.caseParams.selectedInputs = [];
@@ -64,7 +60,6 @@ watch(() => store.caseParams.pCenter, (newVal, oldVal) => {
   }
 });
 
-// Resolves options for dropdowns dynamically (especially for Case 7)
 const getDynamicOptions = (sourceKey) => {
   if (sourceKey === 'processes') return store.processes;
   if (sourceKey === 'businessObjects') return store.businessObjects;
@@ -119,12 +114,20 @@ const runAnalysis = () => {
     edges: result.edges,
     highlightedNodes: result.highlightedNodes || new Set(),
     renderSubgraphs: result.renderSubgraphs || false,
-    customLabels: result.customLabels || {}
+    customLabels: result.customLabels || {},
+    orderedPath: result.orderedPath || null
   };
 };
 
 const clearDiagram = () => {
-  store.renderPayload = { nodes: new Set(), edges: [], highlightedNodes: new Set(), renderSubgraphs: false, customLabels: {} };
+  store.renderPayload = {
+    nodes: new Set(),
+    edges: [],
+    highlightedNodes: new Set(),
+    renderSubgraphs: false,
+    customLabels: {},
+    orderedPath: null
+  };
   store.uiMessage = { text: 'Diagram memory cleared.', type: 'warning' };
 };
 
@@ -288,6 +291,7 @@ const exportJson = () => {
           <label class="radio-label"><input type="radio" value="mermaid" v-model="store.activeEngine" /> Mermaid.js</label>
           <label class="radio-label"><input type="radio" value="visjs" v-model="store.activeEngine" /> Vis.js (2D Physics)</label>
           <label class="radio-label"><input type="radio" value="3d" v-model="store.activeEngine" /> 3D Force Graph</label>
+          <label class="radio-label"><input type="radio" value="n2" v-model="store.activeEngine" /> N2 / DSM Matrix</label>
         </div>
       </div>
 
@@ -336,7 +340,7 @@ const exportJson = () => {
 .status-msg.error { background: #f8d7da; color: #721c24; border: 1px solid #f5c6cb; }
 .status-msg.warning { background: #fff3cd; color: #856404; border: 1px solid #ffeeba; }
 
-.radio-group { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 5px; }
+.radio-group { display: flex; flex-wrap: wrap; gap: 10px 14px; margin-top: 5px; }
 .radio-label { display: flex; align-items: center; gap: 5px; cursor: pointer; font-size: 13px; }
 
 .data-actions { display: flex; gap: 10px; margin-top: 5px; }
