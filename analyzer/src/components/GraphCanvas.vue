@@ -10,10 +10,10 @@ import { store, graphData, applyModelXml } from '../store/graphStore.js';
 import { graphToMermaidAndData } from '../renderers/mermaidGenerator.js';
 import { getProcessGroup, groupLayerY, groupColors } from '../core/iso15288Groups.js';
 import { buildFlowSteps } from '../core/flowStepper.js';
-import { buildShareUrl } from '../core/urlState.js';
 import N2Matrix from './N2Matrix.vue';
 import InsightsView from './InsightsView.vue';
 
+const stageRef = ref(null);
 const fileInput = ref(null);
 const mermaidDiv = ref(null);
 const visDiv = ref(null);
@@ -22,7 +22,7 @@ const threeDiv = ref(null);
 const errorContent = ref('');
 const selectedNodeInfo = ref(null);
 const showSummaryDrawer = ref(false);
-const shareStatus = ref('');
+const isSummaryCollapsed = ref(false);
 
 // In-canvas node search state
 const searchQuery = ref('');
@@ -37,14 +37,6 @@ const flowSteps = ref([]);
 const currentStepIdx = ref(0);
 const isPlaying = ref(false);
 let playTimer = null;
-
-const workspaceTabs = [
-    { id: 'graph', label: '🕸️ Scenario Graph' },
-    { id: 'n2', label: '🔢 N2 / DSM Matrix' },
-    { id: 'checklist', label: '📋 Process Checklist' },
-    { id: 'hotspots', label: '🔥 Hotspots' },
-    { id: 'dictionary', label: '🔍 Dictionary' }
-];
 
 const currentStepState = computed(() => {
     if (!stepperActive.value || flowSteps.value.length === 0) return null;
@@ -79,6 +71,8 @@ let visBaseNodes = [];
 let visBaseEdges = [];
 let threeGraphInstance = null;
 let threeLayerPlanesGroup = null;
+let resizeObserver = null;
+let resizeRaf = null;
 
 mermaid.initialize({
     startOnLoad: false,
@@ -94,25 +88,6 @@ mermaid.initialize({
         fontSize: '14px'
     }
 });
-
-// --- SHAREABLE LINK ---
-const copyShareLink = async () => {
-    const shareUrl = buildShareUrl(store);
-    try {
-        window.history.replaceState(null, '', shareUrl);
-    } catch {
-        // Ignore history restrictions in sandboxed environments
-    }
-
-    try {
-        await navigator.clipboard.writeText(shareUrl);
-        shareStatus.value = '✓ Link Copied!';
-    } catch {
-        window.prompt('Copy shareable link:', shareUrl);
-        shareStatus.value = 'Link Ready';
-    }
-    setTimeout(() => { shareStatus.value = ''; }, 2400);
-};
 
 // --- UNIVERSAL NODE CLICK HANDLER ---
 const showNodeInfo = (rawId) => {
@@ -179,7 +154,6 @@ const togglePinNode = (nodeId) => {
     else next.add(nodeId);
     pinnedNodeIds.value = next;
 
-    // Apply in-place across all 3 engines without redrawing or resetting layout
     if (store.activeEngine === 'mermaid') {
         applyMermaidPinnedClasses();
     } else if (store.activeEngine === 'visjs') {
@@ -210,14 +184,13 @@ const zoomToNode = (nodeId) => {
         const containerRect = mermaidDiv.value.getBoundingClientRect();
         const nodeRect = el.getBoundingClientRect();
 
-        // Determine sensible zoom factor so the target node is clearly legible
         const currentZoom = panZoomInstance.getZoom();
         const targetNodeWidth = Math.min(260, containerRect.width * 0.24);
         const desiredScale = nodeRect.width > 0 ? Math.min(2.6, Math.max(1.0, targetNodeWidth / nodeRect.width)) : 1.5;
         const targetZoom = Math.min(4.5, Math.max(currentZoom, currentZoom * desiredScale));
 
-        // First pan node centre to viewport centre (accounting slightly for right summary panel)
-        const viewportCenterX = containerRect.left + (containerRect.width - (showSummaryDrawer.value ? 340 : 0)) / 2;
+        const rightOffset = (showSummaryDrawer.value && !isSummaryCollapsed.value) ? 340 : 0;
+        const viewportCenterX = containerRect.left + (containerRect.width - rightOffset) / 2;
         const viewportCenterY = containerRect.top + containerRect.height / 2;
         const nodeCenterX = nodeRect.left + nodeRect.width / 2;
         const nodeCenterY = nodeRect.top + nodeRect.height / 2;
@@ -234,7 +207,6 @@ const zoomToNode = (nodeId) => {
             });
         }
 
-        // Brief visual pulse on the focused SVG node
         el.classList.remove('report-pulse');
         void el.offsetWidth;
         el.classList.add('report-pulse');
@@ -1088,7 +1060,10 @@ const fitView = () => {
 
 const toggleSummaryDrawer = () => {
     showSummaryDrawer.value = !showSummaryDrawer.value;
-    if (showSummaryDrawer.value) selectedNodeInfo.value = null;
+    if (showSummaryDrawer.value) {
+        selectedNodeInfo.value = null;
+        isSummaryCollapsed.value = false;
+    }
 };
 
 // Re-render graph when payload, graph engine, or active workspace view changes
@@ -1103,6 +1078,7 @@ watch(
         searchFocusIdx.value = 0;
         pinnedNodeIds.value = new Set();
         showSummaryDrawer.value = Boolean(newPayload?.analysisSummary);
+        isSummaryCollapsed.value = false;
 
         if (view !== 'graph' || !newPayload || newPayload.nodes.size === 0) {
             destroyRenderers();
@@ -1207,345 +1183,290 @@ const exportImage = () => {
     }
 };
 
-const handleResize = () => {
+// Synchronise active renderer dimensions whenever window resizes or sidebar collapses/expands
+const syncRendererSize = () => {
     if (store.activeView !== 'graph') return;
     if (store.activeEngine === '3d' && threeGraphInstance && threeDiv.value) {
         threeGraphInstance.width(threeDiv.value.clientWidth);
         threeGraphInstance.height(threeDiv.value.clientHeight);
     } else if (store.activeEngine === 'mermaid' && panZoomInstance) {
         panZoomInstance.resize();
-        panZoomInstance.fit();
-        panZoomInstance.center();
+    } else if (store.activeEngine === 'visjs' && visNetworkInstance) {
+        visNetworkInstance.setSize('100%', '100%');
+        visNetworkInstance.redraw();
     }
 };
 
-onMounted(() => window.addEventListener('resize', handleResize));
+const scheduleResize = () => {
+    if (resizeRaf) cancelAnimationFrame(resizeRaf);
+    resizeRaf = requestAnimationFrame(() => {
+        syncRendererSize();
+        resizeRaf = null;
+    });
+};
+
+onMounted(() => {
+    window.addEventListener('resize', scheduleResize);
+    if (typeof ResizeObserver !== 'undefined' && stageRef.value) {
+        resizeObserver = new ResizeObserver(scheduleResize);
+        resizeObserver.observe(stageRef.value);
+    }
+});
+
 onUnmounted(() => {
-    window.removeEventListener('resize', handleResize);
+    window.removeEventListener('resize', scheduleResize);
+    if (resizeObserver) resizeObserver.disconnect();
+    if (resizeRaf) cancelAnimationFrame(resizeRaf);
     stopAutoPlay();
     destroyRenderers();
 });
 </script>
 
 <template>
-  <div class="canvas-container">
+  <div class="canvas-container" ref="stageRef">
+    <!-- Loading Overlay -->
+    <div v-if="store.isLoading" class="status-overlay">
+        <div class="spinner"></div>
+        <h3>Loading ISO 15288 Model...</h3>
+        <p>Parsing ArchiMate graph elements and relationships</p>
+    </div>
 
-    <!-- Permanent Top Workspace Navigation Bar -->
-    <header class="workspace-nav">
-      <nav class="workspace-tabs">
-        <button
-          v-for="tab in workspaceTabs"
-          :key="tab.id"
-          :class="['ws-tab', { active: store.activeView === tab.id }]"
-          :disabled="!store.isLoaded && tab.id !== 'graph'"
-          @click="store.activeView = tab.id"
-        >
-          {{ tab.label }}
-        </button>
-      </nav>
+    <!-- Fallback Upload Overlay -->
+    <div v-else-if="!store.isLoaded" class="upload-overlay">
+        <h3>Model Not Loaded</h3>
+        <p v-if="store.loadError" class="overlay-error">{{ store.loadError }}</p>
+        <p v-else>Please choose an ArchiMate Open Exchange XML file.</p>
+        <input type="file" accept=".xml" ref="fileInput" @change="handleFileUpload" style="display: none" />
+        <button class="upload-btn" @click="fileInput.click()">📁 Choose File</button>
+    </div>
 
-      <div class="workspace-actions">
-        <button
-          class="share-btn"
-          :disabled="!store.isLoaded"
-          @click="copyShareLink"
-          title="Copy a direct link to this view, global settings, and current diagram"
-        >
-          {{ shareStatus || '🔗 Share Link' }}
-        </button>
+    <!-- Whole-Model Workspaces -->
+    <N2Matrix v-else-if="store.activeView === 'n2'" />
+    <InsightsView v-else-if="['checklist', 'hotspots', 'dictionary'].includes(store.activeView)" />
+
+    <!-- Scenario Graph: Empty State -->
+    <div v-else-if="store.renderPayload.nodes.size === 0" class="empty-state">
+        <div class="empty-icon">📐</div>
+        <h3>{{ store.modelName }} Ready</h3>
+        <p>Configure a scenario in the left sidebar and click <strong>"Generate Diagram"</strong>, or explore the full model using the tabs above.</p>
+        <div class="model-quick-stats">
+          <span class="stat-pill">Processes: <strong>{{ Object.keys(store.processes).length }}</strong></span>
+          <span class="stat-pill">Business Objects: <strong>{{ Object.keys(store.businessObjects).length }}</strong></span>
+        </div>
+    </div>
+
+    <!-- Scenario Graph: Render Targets -->
+    <template v-else>
+      <div
+        v-if="store.activeEngine === 'mermaid'"
+        ref="mermaidDiv"
+        class="render-div"
+        @click="handleMermaidBackgroundClick"
+      ></div>
+      <div v-if="store.activeEngine === 'visjs'" ref="visDiv" class="render-div"></div>
+      <div v-if="store.activeEngine === '3d'" ref="threeDiv" class="render-div"></div>
+
+      <!-- Floating Canvas Controls + In-Canvas Search -->
+      <div class="canvas-toolbar">
+          <button class="toolbar-btn" @click="fitView" title="Fit diagram to viewport">🎯 Fit View</button>
+          <button
+            v-if="store.renderPayload.edges.length > 0"
+            :class="['toolbar-btn', { active: stepperActive }]"
+            @click="toggleStepper"
+            title="Step through data flow wave by wave"
+          >
+            {{ stepperActive ? '⏹ Exit Stepper' : '▶ Step Flow' }}
+          </button>
+          <button
+            v-if="store.renderPayload.analysisSummary"
+            :class="['toolbar-btn', { active: showSummaryDrawer }]"
+            @click="toggleSummaryDrawer"
+            title="Toggle audit / impact summary report"
+          >
+            📊 Report
+          </button>
+
+          <!-- In-Canvas Text Search -->
+          <div class="toolbar-search-box">
+              <span class="search-icon">🔍</span>
+              <input
+                type="text"
+                v-model="searchQuery"
+                class="toolbar-search-input"
+                placeholder="Highlight node..."
+                @keydown.enter="focusNextSearchMatch"
+              />
+              <span v-if="searchQuery.trim()" :class="['search-badge', { zero: searchMatchList.length === 0 }]">
+                  {{ searchMatchList.length }}
+              </span>
+              <button
+                v-if="searchMatchList.length > 0"
+                class="search-action-btn"
+                @click="focusNextSearchMatch"
+                title="Focus next matching node (Enter)"
+              >
+                ↳
+              </button>
+              <button
+                v-if="searchQuery"
+                class="search-clear-btn"
+                @click="clearSearch"
+                title="Clear search"
+              >
+                ×
+              </button>
+          </div>
+
+          <template v-if="store.activeEngine === '3d'">
+              <label class="toolbar-toggle">
+                  <input type="checkbox" v-model="store.threeOptions.showLabels" />
+                  Labels
+              </label>
+              <label class="toolbar-toggle" title="Separate ISO 15288 process groups onto visual horizontal planes">
+                  <input type="checkbox" v-model="store.threeOptions.isLayered" />
+                  ISO Layers
+              </label>
+          </template>
       </div>
-    </header>
 
-    <!-- Main Workspace Stage -->
-    <div class="workspace-stage">
-      <!-- Loading Overlay -->
-      <div v-if="store.isLoading" class="status-overlay">
-          <div class="spinner"></div>
-          <h3>Loading ISO 15288 Model...</h3>
-          <p>Parsing ArchiMate graph elements and relationships</p>
-      </div>
-
-      <!-- Fallback Upload Overlay -->
-      <div v-else-if="!store.isLoaded" class="upload-overlay">
-          <h3>Model Not Loaded</h3>
-          <p v-if="store.loadError" class="overlay-error">{{ store.loadError }}</p>
-          <p v-else>Please choose an ArchiMate Open Exchange XML file.</p>
-          <input type="file" accept=".xml" ref="fileInput" @change="handleFileUpload" style="display: none" />
-          <button class="upload-btn" @click="fileInput.click()">📁 Choose File</button>
-      </div>
-
-      <!-- Whole-Model Workspaces -->
-      <N2Matrix v-else-if="store.activeView === 'n2'" />
-      <InsightsView v-else-if="['checklist', 'hotspots', 'dictionary'].includes(store.activeView)" />
-
-      <!-- Scenario Graph: Empty State -->
-      <div v-else-if="store.renderPayload.nodes.size === 0" class="empty-state">
-          <div class="empty-icon">📐</div>
-          <h3>{{ store.modelName }} Ready</h3>
-          <p>Configure a scenario in the left sidebar and click <strong>"Generate Diagram"</strong>, or explore the full model using the tabs above.</p>
-          <div class="model-quick-stats">
-            <span class="stat-pill">Processes: <strong>{{ Object.keys(store.processes).length }}</strong></span>
-            <span class="stat-pill">Business Objects: <strong>{{ Object.keys(store.businessObjects).length }}</strong></span>
+      <!-- Step-by-Step Flow Player Bar -->
+      <div v-if="stepperActive && flowSteps.length > 0" class="stepper-bar">
+          <div class="stepper-controls">
+              <button class="step-btn" @click="resetStepper" title="Restart">⏮</button>
+              <button class="step-btn" @click="prevStep" :disabled="currentStepIdx === 0" title="Previous step">◀</button>
+              <button class="step-btn play-btn" @click="toggleAutoPlay" :title="isPlaying ? 'Pause' : 'Auto-play'">
+                  {{ isPlaying ? '⏸' : '▶' }}
+              </button>
+              <button class="step-btn" @click="nextStep" :disabled="currentStepIdx >= flowSteps.length - 1" title="Next step">▶</button>
+              <span class="step-counter">Step {{ currentStepIdx + 1 }} / {{ flowSteps.length }}</span>
+          </div>
+          <div class="step-summary" :title="currentStepState?.summary">
+              {{ currentStepState?.summary }}
           </div>
       </div>
 
-      <!-- Scenario Graph: Render Targets -->
-      <template v-else>
-        <div
-          v-if="store.activeEngine === 'mermaid'"
-          ref="mermaidDiv"
-          class="render-div"
-          @click="handleMermaidBackgroundClick"
-        ></div>
-        <div v-if="store.activeEngine === 'visjs'" ref="visDiv" class="render-div"></div>
-        <div v-if="store.activeEngine === '3d'" ref="threeDiv" class="render-div"></div>
+      <!-- Analysis Summary Drawer (Collapsible to Header + Closeable) -->
+      <div
+        v-if="showSummaryDrawer && store.renderPayload.analysisSummary && !selectedNodeInfo"
+        :class="['summary-panel', { collapsed: isSummaryCollapsed }]"
+      >
+          <div class="summary-header" @click="isSummaryCollapsed = !isSummaryCollapsed">
+              <div class="summary-header-title">
+                  <span class="summary-chevron">{{ isSummaryCollapsed ? '▼' : '▲' }}</span>
+                  <h3>{{ store.renderPayload.analysisSummary.title }}</h3>
+                  <span v-if="isSummaryCollapsed && pinnedNodeIds.size > 0" class="collapsed-pin-badge">
+                      {{ pinnedNodeIds.size }}
+                  </span>
+              </div>
+              <div class="summary-header-actions" @click.stop>
+                  <button
+                    class="summary-icon-btn"
+                    @click="isSummaryCollapsed = !isSummaryCollapsed"
+                    :title="isSummaryCollapsed ? 'Expand report' : 'Collapse report to header'"
+                    :aria-label="isSummaryCollapsed ? 'Expand report' : 'Collapse report'"
+                  >
+                    {{ isSummaryCollapsed ? '＋' : '−' }}
+                  </button>
+                  <button
+                    class="summary-icon-btn"
+                    @click="showSummaryDrawer = false"
+                    title="Close report"
+                    aria-label="Close"
+                  >
+                    &times;
+                  </button>
+              </div>
+          </div>
 
-        <!-- Floating Canvas Controls + In-Canvas Search -->
-        <div class="canvas-toolbar">
-            <button class="toolbar-btn" @click="fitView" title="Fit diagram to viewport">🎯 Fit View</button>
-            <button
-              v-if="store.renderPayload.edges.length > 0"
-              :class="['toolbar-btn', { active: stepperActive }]"
-              @click="toggleStepper"
-              title="Step through data flow wave by wave"
-            >
-              {{ stepperActive ? '⏹ Exit Stepper' : '▶ Step Flow' }}
-            </button>
-            <button
-              v-if="store.renderPayload.analysisSummary"
-              :class="['toolbar-btn', { active: showSummaryDrawer }]"
-              @click="toggleSummaryDrawer"
-              title="Toggle audit / impact summary report"
-            >
-              📊 Report
-            </button>
+          <div v-show="!isSummaryCollapsed" class="summary-body">
+              <p class="summary-sub">{{ store.renderPayload.analysisSummary.subtitle }}</p>
 
-            <!-- In-Canvas Text Search -->
-            <div class="toolbar-search-box">
-                <span class="search-icon">🔍</span>
-                <input
-                  type="text"
-                  v-model="searchQuery"
-                  class="toolbar-search-input"
-                  placeholder="Highlight node..."
-                  @keydown.enter="focusNextSearchMatch"
-                />
-                <span v-if="searchQuery.trim()" :class="['search-badge', { zero: searchMatchList.length === 0 }]">
-                    {{ searchMatchList.length }}
-                </span>
-                <button
-                  v-if="searchMatchList.length > 0"
-                  class="search-action-btn"
-                  @click="focusNextSearchMatch"
-                  title="Focus next matching node (Enter)"
-                >
-                  ↳
-                </button>
-                <button
-                  v-if="searchQuery"
-                  class="search-clear-btn"
-                  @click="clearSearch"
-                  title="Clear search"
-                >
-                  ×
-                </button>
-            </div>
+              <div class="summary-metrics">
+                  <div v-for="m in store.renderPayload.analysisSummary.metrics" :key="m.label" class="metric-box">
+                      <span class="metric-val">{{ m.value }}</span>
+                      <span class="metric-lbl">{{ m.label }}</span>
+                  </div>
+              </div>
 
-            <template v-if="store.activeEngine === '3d'">
-                <label class="toolbar-toggle">
-                    <input type="checkbox" v-model="store.threeOptions.showLabels" />
-                    Labels
-                </label>
-                <label class="toolbar-toggle" title="Separate ISO 15288 process groups onto visual horizontal planes">
-                    <input type="checkbox" v-model="store.threeOptions.isLayered" />
-                    ISO Layers
-                </label>
-            </template>
-        </div>
+              <div v-if="pinnedNodeIds.size > 0" class="pinned-bar">
+                  <span>{{ pinnedNodeIds.size }} node(s) highlighted</span>
+                  <button class="clear-pins-btn" @click="clearPinnedNodes">Clear all</button>
+              </div>
 
-        <!-- Step-by-Step Flow Player Bar -->
-        <div v-if="stepperActive && flowSteps.length > 0" class="stepper-bar">
-            <div class="stepper-controls">
-                <button class="step-btn" @click="resetStepper" title="Restart">⏮</button>
-                <button class="step-btn" @click="prevStep" :disabled="currentStepIdx === 0" title="Previous step">◀</button>
-                <button class="step-btn play-btn" @click="toggleAutoPlay" :title="isPlaying ? 'Pause' : 'Auto-play'">
-                    {{ isPlaying ? '⏸' : '▶' }}
-                </button>
-                <button class="step-btn" @click="nextStep" :disabled="currentStepIdx >= flowSteps.length - 1" title="Next step">▶</button>
-                <span class="step-counter">Step {{ currentStepIdx + 1 }} / {{ flowSteps.length }}</span>
-            </div>
-            <div class="step-summary" :title="currentStepState?.summary">
-                {{ currentStepState?.summary }}
-            </div>
-        </div>
+              <div v-for="sec in store.renderPayload.analysisSummary.sections" :key="sec.title" class="summary-section">
+                  <h4 :class="['sec-title', sec.tone]">{{ sec.title }}</h4>
+                  <div v-if="sec.items.length === 0" class="summary-empty">None</div>
+                  <ul v-else class="summary-list">
+                      <li
+                        v-for="(item, idx) in sec.items"
+                        :key="item.id || idx"
+                        :class="{ 'is-pinned': item.id && pinnedNodeIds.has(item.id) }"
+                      >
+                          <div class="sum-item-row">
+                              <input
+                                v-if="item.id && isNodeInDiagram(item.id)"
+                                type="checkbox"
+                                class="sum-pin-checkbox"
+                                :checked="pinnedNodeIds.has(item.id)"
+                                @change="togglePinNode(item.id)"
+                                title="Highlight node on diagram"
+                              />
+                              <div class="sum-item-text">
+                                  <span class="sum-item-label">{{ item.label }}</span>
+                                  <span v-if="item.detail" class="sum-item-detail">{{ item.detail }}</span>
+                              </div>
+                              <button
+                                v-if="item.id && isNodeInDiagram(item.id)"
+                                class="sum-zoom-btn"
+                                @click="zoomToNode(item.id)"
+                                title="Zoom to node"
+                              >
+                                🎯
+                              </button>
+                          </div>
+                      </li>
+                  </ul>
+              </div>
+          </div>
+      </div>
 
-        <!-- Analysis Summary Drawer (Interactive Zoom + Multi-Highlight without Redraw) -->
-        <div v-if="showSummaryDrawer && store.renderPayload.analysisSummary && !selectedNodeInfo" class="summary-panel">
-            <button class="info-close-btn" @click="showSummaryDrawer = false" aria-label="Close">&times;</button>
-            <h3>{{ store.renderPayload.analysisSummary.title }}</h3>
-            <p class="summary-sub">{{ store.renderPayload.analysisSummary.subtitle }}</p>
+      <!-- Info Panel (Node details) -->
+      <div v-if="selectedNodeInfo" class="info-panel">
+          <button class="info-close-btn" @click="selectedNodeInfo = null" aria-label="Close">&times;</button>
+          <span class="info-group-tag">{{ selectedNodeInfo.group }}</span>
+          <h3>{{ selectedNodeInfo.name }}</h3>
+          <p>{{ selectedNodeInfo.doc }}</p>
+      </div>
 
-            <div class="summary-metrics">
-                <div v-for="m in store.renderPayload.analysisSummary.metrics" :key="m.label" class="metric-box">
-                    <span class="metric-val">{{ m.value }}</span>
-                    <span class="metric-lbl">{{ m.label }}</span>
-                </div>
-            </div>
+      <!-- Universal Legend -->
+      <div class="legend-panel">
+          <h4>Legend</h4>
+          <div class="legend-item"><span class="color-box process"></span> Process / Function</div>
+          <div class="legend-item"><span class="color-box object"></span> Object / Artifact</div>
+          <div class="legend-item"><span class="line solid"></span> Standard Flow</div>
+          <div class="legend-item"><span class="line dashed"></span> Systemic (Enables/Controls/Situational)</div>
+      </div>
 
-            <div v-if="pinnedNodeIds.size > 0" class="pinned-bar">
-                <span>{{ pinnedNodeIds.size }} node(s) highlighted</span>
-                <button class="clear-pins-btn" @click="clearPinnedNodes">Clear all</button>
-            </div>
+      <div v-if="errorContent" class="error-panel">
+        <h4>❌ Diagram Rendering Error</h4>
+        <pre>{{ errorContent }}</pre>
+      </div>
 
-            <div v-for="sec in store.renderPayload.analysisSummary.sections" :key="sec.title" class="summary-section">
-                <h4 :class="['sec-title', sec.tone]">{{ sec.title }}</h4>
-                <div v-if="sec.items.length === 0" class="summary-empty">None</div>
-                <ul v-else class="summary-list">
-                    <li
-                      v-for="(item, idx) in sec.items"
-                      :key="item.id || idx"
-                      :class="{ 'is-pinned': item.id && pinnedNodeIds.has(item.id) }"
-                    >
-                        <div class="sum-item-row">
-                            <input
-                              v-if="item.id && isNodeInDiagram(item.id)"
-                              type="checkbox"
-                              class="sum-pin-checkbox"
-                              :checked="pinnedNodeIds.has(item.id)"
-                              @change="togglePinNode(item.id)"
-                              title="Highlight node on diagram"
-                            />
-                            <div class="sum-item-text">
-                                <span class="sum-item-label">{{ item.label }}</span>
-                                <span v-if="item.detail" class="sum-item-detail">{{ item.detail }}</span>
-                            </div>
-                            <button
-                              v-if="item.id && isNodeInDiagram(item.id)"
-                              class="sum-zoom-btn"
-                              @click="zoomToNode(item.id)"
-                              title="Zoom to node"
-                            >
-                              🎯
-                            </button>
-                        </div>
-                    </li>
-                </ul>
-            </div>
-        </div>
-
-        <!-- Info Panel (Node details) -->
-        <div v-if="selectedNodeInfo" class="info-panel">
-            <button class="info-close-btn" @click="selectedNodeInfo = null" aria-label="Close">&times;</button>
-            <span class="info-group-tag">{{ selectedNodeInfo.group }}</span>
-            <h3>{{ selectedNodeInfo.name }}</h3>
-            <p>{{ selectedNodeInfo.doc }}</p>
-        </div>
-
-        <!-- Universal Legend -->
-        <div class="legend-panel">
-            <h4>Legend</h4>
-            <div class="legend-item"><span class="color-box process"></span> Process / Function</div>
-            <div class="legend-item"><span class="color-box object"></span> Object / Artifact</div>
-            <div class="legend-item"><span class="line solid"></span> Standard Flow</div>
-            <div class="legend-item"><span class="line dashed"></span> Systemic (Enables/Controls/Situational)</div>
-        </div>
-
-        <div v-if="errorContent" class="error-panel">
-          <h4>❌ Diagram Rendering Error</h4>
-          <pre>{{ errorContent }}</pre>
-        </div>
-
-        <!-- Export Image Button -->
-        <div class="export-image-container">
-          <button class="export-btn" @click="exportImage">📸 Export PNG</button>
-        </div>
-      </template>
-    </div>
-
+      <!-- Export Image Button -->
+      <div class="export-image-container">
+        <button class="export-btn" @click="exportImage">📸 Export PNG</button>
+      </div>
+    </template>
   </div>
 </template>
 
 <style scoped>
 .canvas-container {
-    display: flex;
-    flex-direction: column;
+    position: relative;
     width: 100%;
     height: 100%;
     background: #ffffff;
     overflow: hidden;
-}
-
-/* Top Workspace Navigation Bar */
-.workspace-nav {
-    flex-shrink: 0;
-    display: flex;
-    flex-wrap: wrap;
-    justify-content: space-between;
-    align-items: center;
-    gap: 10px;
-    padding: 8px 16px;
-    background: #ffffff;
-    border-bottom: 1px solid #e0e4e8;
-    z-index: 110;
-}
-.workspace-tabs {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 6px;
-}
-.ws-tab {
-    padding: 6px 12px;
-    border-radius: 6px;
-    border: 1px solid #d0d7de;
-    background: #f6f8fa;
-    color: #334155;
-    font-size: 12.5px;
-    font-weight: 600;
-    cursor: pointer;
-    transition: all 0.15s;
-}
-.ws-tab:hover:not(:disabled) { background: #eaeef2; }
-.ws-tab.active {
-    background: #4CAF50;
-    color: #ffffff;
-    border-color: #4CAF50;
-}
-.ws-tab:disabled {
-    opacity: 0.45;
-    cursor: not-allowed;
-}
-
-.workspace-actions {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-}
-.share-btn {
-    padding: 6px 12px;
-    border-radius: 6px;
-    border: 1px solid #cbd5e1;
-    background: #ffffff;
-    color: #1e293b;
-    font-size: 12px;
-    font-weight: 600;
-    cursor: pointer;
-    transition: all 0.15s;
-}
-.share-btn:hover:not(:disabled) {
-    background: #f1f5f9;
-    border-color: #94a3b8;
-}
-.share-btn:disabled {
-    opacity: 0.45;
-    cursor: not-allowed;
-}
-
-.workspace-stage {
-    flex: 1 1 0;
-    min-height: 0;
-    position: relative;
-    overflow: hidden;
-    background: #ffffff;
 }
 
 .render-div { width: 100%; height: 100%; overflow: hidden; outline: none; }
@@ -1653,14 +1574,64 @@ onUnmounted(() => {
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 
-/* Analysis Summary Drawer */
+/* Analysis Summary Drawer (Collapsible to Header) */
 .summary-panel {
-    position: absolute; top: 16px; right: 16px; width: 350px; max-height: calc(100% - 100px);
-    background: #ffffff; border: 1px solid #d0d7de; border-radius: 8px;
-    box-shadow: 0 10px 25px rgba(0, 0, 0, 0.14); padding: 18px;
-    overflow-y: auto; z-index: 950;
+    position: absolute; top: 14px; right: 16px; width: 350px; max-height: calc(100% - 96px);
+    background: rgba(255, 255, 255, 0.97); border: 1px solid #d0d7de; border-radius: 8px;
+    box-shadow: 0 10px 25px rgba(0, 0, 0, 0.14);
+    display: flex; flex-direction: column; overflow: hidden; z-index: 950;
 }
-.summary-panel h3 { margin: 0 0 4px 0; padding-right: 28px; font-size: 16px; color: #1e293b; }
+.summary-panel.collapsed {
+    width: auto; min-width: 245px; max-width: 350px;
+    box-shadow: 0 3px 10px rgba(0, 0, 0, 0.1);
+}
+.summary-header {
+    flex-shrink: 0;
+    display: flex; justify-content: space-between; align-items: center; gap: 10px;
+    padding: 10px 12px 10px 14px;
+    background: #f8fafc; border-bottom: 1px solid #e2e8f0;
+    cursor: pointer; user-select: none;
+}
+.summary-panel.collapsed .summary-header {
+    border-bottom: none;
+}
+.summary-header:hover {
+    background: #f1f5f9;
+}
+.summary-header-title {
+    display: flex; align-items: center; gap: 7px; min-width: 0;
+}
+.summary-chevron {
+    font-size: 10px; color: #64748b; flex-shrink: 0;
+}
+.summary-header h3 {
+    margin: 0; font-size: 14px; color: #1e293b;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.collapsed-pin-badge {
+    font-size: 10px; font-weight: 700; padding: 1px 6px; border-radius: 10px;
+    background: #FCE4EC; color: #AD1457; border: 1px solid #F48FB1; flex-shrink: 0;
+}
+.summary-header-actions {
+    display: flex; align-items: center; gap: 4px; flex-shrink: 0;
+}
+.summary-icon-btn {
+    width: 26px; height: 26px; border-radius: 5px;
+    border: none; background: transparent; color: #64748b;
+    font-size: 17px; line-height: 1; cursor: pointer;
+    display: flex; align-items: center; justify-content: center;
+    transition: background 0.15s, color 0.15s;
+}
+.summary-icon-btn:hover {
+    background: #e2e8f0; color: #0f172a;
+}
+
+.summary-body {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+    padding: 12px 16px 16px 16px;
+}
 .summary-sub { margin: 0 0 12px 0; font-size: 12px; color: #64748b; }
 .summary-metrics { display: flex; gap: 8px; margin-bottom: 12px; }
 .metric-box {
@@ -1723,7 +1694,7 @@ onUnmounted(() => {
 
 /* Info Panel Styles */
 .info-panel {
-    position: absolute; top: 16px; right: 16px; width: 350px; max-height: calc(100% - 100px);
+    position: absolute; top: 14px; right: 16px; width: 350px; max-height: calc(100% - 96px);
     background: #ffffff; border: 1px solid #e0e0e0; border-radius: 8px;
     box-shadow: 0 10px 25px rgba(0,0,0,0.2); padding: 20px; overflow-y: auto; z-index: 1000;
 }
@@ -1795,9 +1766,5 @@ onUnmounted(() => {
 .stat-pill {
     background: #ffffff; border: 1px solid #d0d7de; padding: 6px 14px;
     border-radius: 20px; font-size: 0.85rem; color: #444; box-shadow: 0 1px 3px rgba(0,0,0,0.04);
-}
-
-@media (max-width: 768px) {
-    .workspace-nav { padding-left: 105px; }
 }
 </style>
