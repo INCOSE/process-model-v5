@@ -133,14 +133,33 @@ const findMermaidNodeEl = (nodeId) => {
     return null;
 };
 
+const MERMAID_SHAPE_SELECTOR = ':scope > rect, :scope > polygon, :scope > circle, :scope > ellipse, :scope > path, .label-container';
+
 const applyMermaidPinnedClasses = () => {
     if (!mermaidDiv.value) return;
+
+    // Reset previously pinned nodes back to Mermaid's original styling
     mermaidDiv.value.querySelectorAll('.report-pinned').forEach((el) => {
         el.classList.remove('report-pinned');
+        el.style.removeProperty('filter');
+        el.querySelectorAll(MERMAID_SHAPE_SELECTOR).forEach((shape) => {
+            shape.style.removeProperty('stroke');
+            shape.style.removeProperty('stroke-width');
+            shape.style.removeProperty('fill');
+        });
     });
+
+    // Apply inline !important highlight so it overrides Mermaid's #id !important rules
     pinnedNodeIds.value.forEach((nodeId) => {
         const el = findMermaidNodeEl(nodeId);
-        if (el) el.classList.add('report-pinned');
+        if (!el) return;
+        el.classList.add('report-pinned');
+        el.style.setProperty('filter', 'drop-shadow(0 0 6px rgba(216, 27, 96, 0.55))');
+        el.querySelectorAll(MERMAID_SHAPE_SELECTOR).forEach((shape) => {
+            shape.style.setProperty('stroke', '#D81B60', 'important');
+            shape.style.setProperty('stroke-width', '4px', 'important');
+            shape.style.setProperty('fill', '#FCE4EC', 'important');
+        });
     });
 };
 
@@ -1388,9 +1407,17 @@ onUnmounted(() => {
                   </div>
               </div>
 
-              <div v-if="pinnedNodeIds.size > 0" class="pinned-bar">
-                  <span>{{ pinnedNodeIds.size }} node(s) highlighted</span>
-                  <button class="clear-pins-btn" @click="clearPinnedNodes">Clear all</button>
+              <div :class="['pinned-bar', { empty: pinnedNodeIds.size === 0 }]">
+                  <span>
+                      {{ pinnedNodeIds.size > 0 ? `${pinnedNodeIds.size} node(s) highlighted` : '0 nodes highlighted' }}
+                  </span>
+                  <button
+                  class="clear-pins-btn"
+                  :disabled="pinnedNodeIds.size === 0"
+                  @click="clearPinnedNodes"
+                  >
+                  Clear all
+                  </button>
               </div>
 
               <div v-for="sec in store.renderPayload.analysisSummary.sections" :key="sec.title" class="summary-section">
@@ -1645,12 +1672,19 @@ onUnmounted(() => {
     display: flex; justify-content: space-between; align-items: center;
     background: #FCE4EC; border: 1px solid #F48FB1; color: #AD1457;
     padding: 5px 10px; border-radius: 6px; font-size: 11.5px; font-weight: 600;
-    margin-bottom: 12px;
+    margin-bottom: 12px; transition: background 0.15s, border-color 0.15s, color 0.15s;
+}
+.pinned-bar.empty {
+    background: #f8fafc; border-color: #e2e8f0; color: #94a3b8;
 }
 .clear-pins-btn {
     border: none; background: #ffffff; color: #AD1457;
     border-radius: 4px; padding: 2px 7px; font-size: 11px; font-weight: 700;
-    cursor: pointer;
+    cursor: pointer; transition: opacity 0.15s, background 0.15s;
+}
+.clear-pins-btn:hover:not(:disabled) { background: #F8BBD0; }
+.clear-pins-btn:disabled {
+    background: #eef2f6; color: #94a3b8; cursor: default; opacity: 0.7;
 }
 .clear-pins-btn:hover { background: #F8BBD0; }
 
