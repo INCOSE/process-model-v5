@@ -4,11 +4,8 @@ import { store, graphData } from '../store/graphStore.js';
 import { getProcessGroup, groupColors, groupOrder, getProcessOrderIndex } from '../core/iso15288Groups.js';
 import SearchableSelect from './SearchableSelect.vue';
 
-const activeTab = ref('checklist'); // 'checklist' | 'hotspots' | 'dictionary'
-
-// --- TAB 1: PROCESS CHECKLIST (SIPOC / ICOM) ---
-const selectedProcessId = ref('');
-const checkedItems = ref({}); // key -> boolean (default true)
+// --- PROCESS CHECKLIST (SIPOC / ICOM) ---
+const checkedItems = ref({});
 
 const processOptions = computed(() => {
   return Object.entries(store.processes)
@@ -27,18 +24,17 @@ const processOptions = computed(() => {
     });
 });
 
-// Pick a sensible default process when model loads
 watch(
   processOptions,
   (opts) => {
-    if (!selectedProcessId.value && opts.length > 0) {
-      selectedProcessId.value = opts[0].id;
+    if ((!store.selectedChecklistProcessId || !store.processes[store.selectedChecklistProcessId]) && opts.length > 0) {
+      store.selectedChecklistProcessId = opts[0].id;
     }
   },
   { immediate: true }
 );
 
-watch(selectedProcessId, () => {
+watch(() => store.selectedChecklistProcessId, () => {
   checkedItems.value = {};
 });
 
@@ -48,7 +44,7 @@ const toggleCheck = (key) => {
 };
 
 const processDetails = computed(() => {
-  const pId = selectedProcessId.value;
+  const pId = store.selectedChecklistProcessId;
   const gActive = graphData.gActive();
   const gFull = graphData.gFull;
   if (!pId || !gActive || !gActive.hasNode(pId)) return null;
@@ -63,7 +59,6 @@ const processDetails = computed(() => {
     return t.includes('BusinessFunction') || t.includes('BusinessProcess');
   };
 
-  // Internal activities via Composition in gFull
   const activities = [];
   gFull.forEachOutEdge(pId, (edge, attr, u, v) => {
     const t = gFull.getNodeAttribute(v, 'type') || '';
@@ -81,7 +76,6 @@ const processDetails = computed(() => {
   const enablesMap = new Map();
   const outputsMap = new Map();
 
-  // Incoming edges to pId
   gActive.forEachInEdge(pId, (edge, attr, src) => {
     if (attr.access === 'hierarchy_reverse' || attr.type?.includes('Composition')) return;
     if (isProcNode(src)) return;
@@ -90,7 +84,6 @@ const processDetails = computed(() => {
     const objDoc = gActive.getNodeAttribute(src, 'doc') || '';
     const sub = attr.subclass || '';
 
-    // Find upstream producers of this input
     const producers = [];
     gFull.forEachInEdge(src, (e2, a2, pSrc) => {
       if (a2.access === 'hierarchy_reverse') return;
@@ -106,7 +99,6 @@ const processDetails = computed(() => {
     else inputsMap.set(src, record);
   });
 
-  // Outgoing edges from pId
   gActive.forEachOutEdge(pId, (edge, attr, u, tgt) => {
     if (attr.access === 'hierarchy_reverse' || attr.type?.includes('Composition')) return;
     if (isProcNode(tgt)) return;
@@ -115,7 +107,6 @@ const processDetails = computed(() => {
     const objDoc = gActive.getNodeAttribute(tgt, 'doc') || '';
     const sub = attr.subclass || '';
 
-    // Find downstream consumers of this output
     const consumers = [];
     gFull.forEachOutEdge(tgt, (e2, a2, oSrc, pTgt) => {
       if (a2.access === 'hierarchy_reverse') return;
@@ -198,7 +189,7 @@ const exportChecklistMarkdown = () => {
   URL.revokeObjectURL(url);
 };
 
-// --- TAB 2: STRUCTURAL HOTSPOTS ---
+// --- STRUCTURAL HOTSPOTS ---
 const hotspots = computed(() => {
   const gActive = graphData.gActive();
   if (!store.isLoaded || !gActive) return { hubs: [], sharedOutputs: [], feedbackLoops: [] };
@@ -249,8 +240,7 @@ const hotspots = computed(() => {
   hubs.sort((a, b) => b.total - a.total || a.name.localeCompare(b.name));
   sharedOutputs.sort((a, b) => b.writers.length - a.writers.length || a.name.localeCompare(b.name));
 
-  // Direct mutual feedback loops (Process A -> Obj -> Process B AND Process B -> Obj -> Process A)
-  const procPairs = new Map(); // "idA|idB" -> Set(objNames)
+  const procPairs = new Map();
   Object.keys(store.processes).forEach((pA) => {
     if (!gActive.hasNode(pA)) return;
     gActive.forEachOutEdge(pA, (e1, a1, u1, obj) => {
@@ -292,9 +282,9 @@ const hotspots = computed(() => {
   };
 });
 
-// --- TAB 3: DICTIONARY & FULL-TEXT DOC SEARCH ---
+// --- DICTIONARY & FULL-TEXT DOC SEARCH ---
 const dictQuery = ref('');
-const dictFilter = ref('all'); // 'all' | 'process' | 'activity' | 'object'
+const dictFilter = ref('all');
 
 const dictionaryItems = computed(() => {
   const gFull = graphData.gFull;
@@ -330,38 +320,22 @@ const dictionaryItems = computed(() => {
 });
 
 const openInChecklist = (procId) => {
-  selectedProcessId.value = procId;
-  activeTab.value = 'checklist';
+  store.selectedChecklistProcessId = procId;
+  store.activeView = 'checklist';
 };
 </script>
 
 <template>
   <div class="insights-wrapper">
-    <!-- Top Tabs -->
-    <div class="insights-header">
-      <div class="tab-bar">
-        <button :class="['tab-btn', { active: activeTab === 'checklist' }]" @click="activeTab = 'checklist'">
-          📋 Process Checklist (SIPOC)
-        </button>
-        <button :class="['tab-btn', { active: activeTab === 'hotspots' }]" @click="activeTab = 'hotspots'">
-          🔥 Structural Hotspots
-        </button>
-        <button :class="['tab-btn', { active: activeTab === 'dictionary' }]" @click="activeTab = 'dictionary'">
-          🔍 Dictionary & Search
-        </button>
-      </div>
-    </div>
-
-    <!-- Scrollable Workspace -->
     <div class="insights-body">
 
-      <!-- TAB 1: PROCESS CHECKLIST -->
-      <div v-if="activeTab === 'checklist'" class="tab-panel">
+      <!-- PROCESS CHECKLIST -->
+      <div v-if="store.activeView === 'checklist'" class="tab-panel">
         <div class="checklist-toolbar">
           <div class="process-picker">
-            <label>Inspect & Tailor Process:</label>
+            <label>Inspect &amp; Tailor Process:</label>
             <SearchableSelect
-              v-model="selectedProcessId"
+              v-model="store.selectedChecklistProcessId"
               :options="processOptions"
               :multiple="false"
               placeholder="Select a process..."
@@ -439,12 +413,11 @@ const openInChecklist = (procId) => {
             </div>
           </div>
 
-          <!-- Controls & Enablers strip -->
           <div class="meta-strip">
             <div class="meta-box">
               <h4>Controls ({{ processDetails.controls.length }})</h4>
               <div v-if="processDetails.controls.length === 0" class="empty-note">
-                Enable "Inherit Controls" in the sidebar to view inherited process controls.
+                Enable "Inherit Controls" in Global Model Settings to view inherited process controls.
               </div>
               <div v-else class="chip-wrap">
                 <span v-for="c in processDetails.controls" :key="c.id" class="meta-chip">{{ c.name }}</span>
@@ -453,7 +426,7 @@ const openInChecklist = (procId) => {
             <div class="meta-box">
               <h4>Enablers ({{ processDetails.enables.length }})</h4>
               <div v-if="processDetails.enables.length === 0" class="empty-note">
-                Enable "Inherit Enables" in the sidebar to view inherited process enablers.
+                Enable "Inherit Enables" in Global Model Settings to view inherited process enablers.
               </div>
               <div v-else class="chip-wrap">
                 <span v-for="e in processDetails.enables" :key="e.id" class="meta-chip">{{ e.name }}</span>
@@ -463,13 +436,12 @@ const openInChecklist = (procId) => {
         </div>
       </div>
 
-      <!-- TAB 2: STRUCTURAL HOTSPOTS -->
-      <div v-else-if="activeTab === 'hotspots'" class="tab-panel">
+      <!-- STRUCTURAL HOTSPOTS -->
+      <div v-else-if="store.activeView === 'hotspots'" class="tab-panel">
         <div class="hotspot-grid">
-          <!-- Hub Artefacts -->
           <div class="hotspot-card">
             <h3>🏆 Top Hub Artefacts (Highest Coupling)</h3>
-            <p class="card-hint">Artefacts touched by the most processes — prime candidates for strict configuration & version control.</p>
+            <p class="card-hint">Artefacts touched by the most processes — prime candidates for strict configuration &amp; version control.</p>
             <table class="data-table">
               <thead>
                 <tr>
@@ -490,7 +462,6 @@ const openInChecklist = (procId) => {
             </table>
           </div>
 
-          <!-- Shared Outputs -->
           <div class="hotspot-card">
             <h3>⚠ Shared Outputs ({{ hotspots.sharedOutputs.length }})</h3>
             <p class="card-hint">Artefacts written by multiple processes — high risk of ambiguous ownership.</p>
@@ -506,7 +477,6 @@ const openInChecklist = (procId) => {
             </ul>
           </div>
 
-          <!-- Feedback Loops -->
           <div class="hotspot-card full-width">
             <h3>🔄 Direct Process Feedback Loops ({{ hotspots.feedbackLoops.length }})</h3>
             <p class="card-hint">Process pairs exchanging artefacts in both directions — iterative handoffs rather than waterfall stages.</p>
@@ -522,8 +492,8 @@ const openInChecklist = (procId) => {
         </div>
       </div>
 
-      <!-- TAB 3: DICTIONARY & DOC SEARCH -->
-      <div v-else-if="activeTab === 'dictionary'" class="tab-panel">
+      <!-- DICTIONARY & DOC SEARCH -->
+      <div v-else-if="store.activeView === 'dictionary'" class="tab-panel">
         <div class="dict-toolbar">
           <input
             type="text"
@@ -570,37 +540,6 @@ const openInChecklist = (procId) => {
   overflow: hidden;
 }
 
-.insights-header {
-  flex-shrink: 0;
-  background: #ffffff;
-  border-bottom: 1px solid #e0e4e8;
-  padding: 10px 20px;
-}
-
-.tab-bar {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-}
-
-.tab-btn {
-  padding: 8px 14px;
-  border-radius: 6px;
-  border: 1px solid #d0d7de;
-  background: #f6f8fa;
-  color: #334155;
-  font-size: 13px;
-  font-weight: 600;
-  cursor: pointer;
-  transition: all 0.15s;
-}
-.tab-btn:hover { background: #eaeef2; }
-.tab-btn.active {
-  background: #4CAF50;
-  color: #ffffff;
-  border-color: #4CAF50;
-}
-
 .insights-body {
   flex: 1 1 0;
   min-height: 0;
@@ -616,7 +555,7 @@ const openInChecklist = (procId) => {
   gap: 18px;
 }
 
-/* Checklist Tab */
+/* Checklist */
 .checklist-toolbar {
   display: flex;
   flex-wrap: wrap;
@@ -747,7 +686,7 @@ const openInChecklist = (procId) => {
   border-radius: 12px;
 }
 
-/* Hotspots Tab */
+/* Hotspots */
 .hotspot-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(380px, 1fr));
@@ -833,7 +772,7 @@ const openInChecklist = (procId) => {
 .loop-title { font-weight: 700; color: #1e293b; margin-bottom: 6px; }
 .loop-dir { color: #475569; margin-bottom: 3px; line-height: 1.4; }
 
-/* Dictionary Tab */
+/* Dictionary */
 .dict-toolbar {
   display: flex;
   flex-wrap: wrap;

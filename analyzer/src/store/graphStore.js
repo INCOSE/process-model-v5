@@ -1,5 +1,6 @@
 import { reactive, watch } from 'vue';
 import { loadAndParseXML } from '../core/xmlParser.js';
+import { CaseRegistry } from '../cases/caseRegistry.js';
 
 export const store = reactive({
   isLoaded: false,
@@ -18,15 +19,27 @@ export const store = reactive({
     includeSituational: false
   },
 
-  // UI state
+  // Top-level workspace view: 'graph' | 'n2' | 'checklist' | 'hotspots' | 'dictionary'
+  activeView: 'graph',
+
+  // Graph rendering engine (used in 'graph' view): 'mermaid' | 'visjs' | '3d'
+  activeEngine: 'mermaid',
+
+  // 3D display preferences (shared for deep linking)
+  threeOptions: {
+    showLabels: true,
+    isLayered: false
+  },
+
+  // Selected process in Process Checklist view
+  selectedChecklistProcessId: '',
+
+  // Scenario Builder state
   activeCaseId: 'case_1',
   caseParams: {},
   uiMessage: { text: '', type: '' },
 
-  // Visualisation Engine Selection: 'mermaid', 'visjs', '3d', 'n2', 'insights'
-  activeEngine: 'mermaid',
-
-  // Universal Graph Data payload for renderers
+  // Universal Graph Data payload for graph renderers
   renderPayload: {
     nodes: new Set(),
     edges: [],
@@ -43,6 +56,62 @@ export const graphData = {
   gDirect: null,
   gActive: () => store.settings.useHierarchy ? graphData.gFull : graphData.gDirect
 };
+
+/**
+ * Populates default values for a case's input schema.
+ */
+export function getCaseDefaults(caseId) {
+  const c = CaseRegistry[caseId];
+  const defaults = {};
+  if (c?.inputs) {
+    c.inputs.forEach((inp) => {
+      if (inp.default !== undefined) defaults[inp.key] = inp.default;
+    });
+  }
+  return defaults;
+}
+
+/**
+ * Executes the currently selected case and updates renderPayload.
+ */
+export function executeActiveCase(switchToGraphView = true) {
+  if (!store.isLoaded) return false;
+  const activeCase = CaseRegistry[store.activeCaseId];
+  if (!activeCase) return false;
+
+  const ctx = {
+    gActive: graphData.gActive(),
+    gFull: graphData.gFull,
+    settings: store.settings
+  };
+
+  const result = activeCase.execute(ctx, store.caseParams);
+
+  if (result.error) {
+    store.uiMessage = { text: result.message, type: 'error' };
+    return false;
+  }
+
+  store.uiMessage = {
+    text: result.message || 'Diagram generated!',
+    type: result.warning ? 'warning' : 'success'
+  };
+
+  if (switchToGraphView) {
+    store.activeView = 'graph';
+  }
+
+  store.renderPayload = {
+    nodes: result.nodes,
+    edges: result.edges,
+    highlightedNodes: result.highlightedNodes || new Set(),
+    renderSubgraphs: result.renderSubgraphs || false,
+    customLabels: result.customLabels || {},
+    orderedPath: result.orderedPath || null,
+    analysisSummary: result.analysisSummary || null
+  };
+  return true;
+}
 
 /**
  * Parses raw XML string and initialises the graph structures.

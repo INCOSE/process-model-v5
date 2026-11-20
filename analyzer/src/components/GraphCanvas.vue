@@ -10,6 +10,7 @@ import { store, graphData, applyModelXml } from '../store/graphStore.js';
 import { graphToMermaidAndData } from '../renderers/mermaidGenerator.js';
 import { getProcessGroup, groupLayerY, groupColors } from '../core/iso15288Groups.js';
 import { buildFlowSteps } from '../core/flowStepper.js';
+import { buildShareUrl } from '../core/urlState.js';
 import N2Matrix from './N2Matrix.vue';
 import InsightsView from './InsightsView.vue';
 
@@ -21,10 +22,7 @@ const threeDiv = ref(null);
 const errorContent = ref('');
 const selectedNodeInfo = ref(null);
 const showSummaryDrawer = ref(false);
-
-// 3D display controls
-const show3DLabels = ref(true);
-const is3DLayered = ref(false);
+const shareStatus = ref('');
 
 // In-canvas node search state
 const searchQuery = ref('');
@@ -37,12 +35,20 @@ const currentStepIdx = ref(0);
 const isPlaying = ref(false);
 let playTimer = null;
 
+const workspaceTabs = [
+    { id: 'graph', label: '🕸️ Scenario Graph' },
+    { id: 'n2', label: '🔢 N2 / DSM Matrix' },
+    { id: 'checklist', label: '📋 Process Checklist' },
+    { id: 'hotspots', label: '🔥 Hotspots' },
+    { id: 'dictionary', label: '🔍 Dictionary' }
+];
+
 const currentStepState = computed(() => {
     if (!stepperActive.value || flowSteps.value.length === 0) return null;
     return flowSteps.value[currentStepIdx.value] || null;
 });
 
-// Matching node IDs for in-canvas search (null when query is empty)
+// Matching node IDs for in-canvas search
 const searchMatchList = computed(() => {
     const q = searchQuery.value.trim().toLowerCase();
     if (!q || !store.renderPayload || store.renderPayload.nodes.size === 0) return [];
@@ -85,6 +91,26 @@ mermaid.initialize({
         fontSize: '14px'
     }
 });
+
+// --- SHAREABLE LINK ---
+const copyShareLink = async () => {
+    const shareUrl = buildShareUrl(store);
+    try {
+        window.history.replaceState(null, '', shareUrl);
+    } catch {
+        // Ignore history restrictions in sandboxed environments
+    }
+
+    try {
+        await navigator.clipboard.writeText(shareUrl);
+        shareStatus.value = '✓ Link Copied!';
+    } catch {
+        // Fallback for browsers without clipboard permission
+        window.prompt('Copy shareable link:', shareUrl);
+        shareStatus.value = 'Link Ready';
+    }
+    setTimeout(() => { shareStatus.value = ''; }, 2400);
+};
 
 // --- UNIVERSAL NODE CLICK HANDLER ---
 const showNodeInfo = (rawId) => {
@@ -342,7 +368,7 @@ const createLayerLabelSprite = (text, colorHex) => {
     canvas.width = Math.ceil(textW + 32);
     canvas.height = 46;
 
-    ctx.fillStyle = 'rgba(255, 255, 255, 0.9)';
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.92)';
     ctx.strokeStyle = colorHex;
     ctx.lineWidth = 3;
     ctx.fillRect(2, 2, canvas.width - 4, canvas.height - 4);
@@ -362,8 +388,8 @@ const createLayerLabelSprite = (text, colorHex) => {
     return sprite;
 };
 
-const add3DLayerPlanes = (nodes) => {
-    if (!threeGraphInstance || !is3DLayered.value) return;
+const add3DLayerPlanes = (nodes, planeSize) => {
+    if (!threeGraphInstance || !store.threeOptions.isLayered) return;
     clear3DLayerPlanes();
 
     const activeGroups = new Set();
@@ -376,7 +402,6 @@ const add3DLayerPlanes = (nodes) => {
     if (activeGroups.size === 0) return;
 
     const groupObj = new THREE.Group();
-    const planeSize = 520;
     const half = planeSize / 2;
 
     activeGroups.forEach((groupName) => {
@@ -384,7 +409,6 @@ const add3DLayerPlanes = (nodes) => {
         const colorHex = groupColors[groupName] || '#546e7a';
         const threeColor = new THREE.Color(colorHex);
 
-        // Translucent horizontal slice
         const planeGeo = new THREE.PlaneGeometry(planeSize, planeSize);
         const planeMat = new THREE.MeshBasicMaterial({
             color: threeColor,
@@ -398,7 +422,6 @@ const add3DLayerPlanes = (nodes) => {
         planeMesh.position.y = y;
         groupObj.add(planeMesh);
 
-        // Crisp border perimeter around the plane
         const borderPoints = [
             new THREE.Vector3(-half, y, -half),
             new THREE.Vector3(half, y, -half),
@@ -409,14 +432,13 @@ const add3DLayerPlanes = (nodes) => {
         const borderMat = new THREE.LineBasicMaterial({
             color: threeColor,
             transparent: true,
-            opacity: 0.4
+            opacity: 0.42
         });
         const borderLoop = new THREE.LineLoop(borderGeo, borderMat);
         groupObj.add(borderLoop);
 
-        // Layer title tag at the front-left corner
         const labelSprite = createLayerLabelSprite(groupName, colorHex);
-        labelSprite.position.set(-half + 70, y + 10, half - 22);
+        labelSprite.position.set(-half + 75, y + 10, half - 22);
         groupObj.add(labelSprite);
     });
 
@@ -744,6 +766,7 @@ const render3D = (payload) => {
     if (!threeDiv.value) return;
     threeDiv.value.innerHTML = '';
     const gActive = graphData.gActive();
+    const layered = store.threeOptions.isLayered;
 
     const nodes = Array.from(payload.nodes).map(id => {
         const type = gActive.getNodeAttribute(id, 'type') || '';
@@ -762,12 +785,60 @@ const render3D = (payload) => {
             color: isHighlighted ? '#D79B00' : (isProc ? '#D6B656' : '#82B366')
         };
 
-        if (is3DLayered.value && isProc) {
+        if (layered && isProc) {
             nodeObj.fy = groupLayerY[group] ?? -170;
         }
 
         return nodeObj;
     });
+
+    const nodeById = new Map(nodes.map((n) => [n.id, n]));
+
+    // Deterministic vertical placement for artefacts in ISO Layers mode:
+    // Place each artefact midway between its connected process layers (or slightly above a single layer).
+    if (layered) {
+        const neighbourProcessYs = new Map();
+        payload.edges.forEach((e) => {
+            const nU = nodeById.get(e.u);
+            const nV = nodeById.get(e.v);
+            if (!nU || !nV) return;
+            if (nU.isProc && !nV.isProc) {
+                if (!neighbourProcessYs.has(nV.id)) neighbourProcessYs.set(nV.id, []);
+                neighbourProcessYs.get(nV.id).push(nU.fy);
+            } else if (!nU.isProc && nV.isProc) {
+                if (!neighbourProcessYs.has(nU.id)) neighbourProcessYs.set(nU.id, []);
+                neighbourProcessYs.get(nU.id).push(nV.fy);
+            }
+        });
+
+        let artIdx = 0;
+        nodes.forEach((n) => {
+            if (n.isProc) return;
+            const ys = neighbourProcessYs.get(n.id);
+            if (ys && ys.length > 0) {
+                const uniqueYs = Array.from(new Set(ys));
+                const avgY = ys.reduce((a, b) => a + b, 0) / ys.length;
+                if (uniqueYs.length === 1) {
+                    // Single-layer artefact: hover neatly above the plane (or below if top External plane)
+                    const offset = uniqueYs[0] >= 180 ? -30 : 30;
+                    n.fy = uniqueYs[0] + offset;
+                } else {
+                    // Cross-layer artefact: sit midway between connected planes with tiny stagger to avoid overlap
+                    const stagger = ((artIdx % 3) - 1) * 7;
+                    n.fy = avgY + stagger;
+                }
+            }
+            artIdx++;
+        });
+    }
+
+    // Compute plane size dynamically based on densest process layer
+    const layerCounts = {};
+    nodes.forEach((n) => {
+        if (n.isProc) layerCounts[n.group] = (layerCounts[n.group] || 0) + 1;
+    });
+    const maxInLayer = Math.max(1, ...Object.values(layerCounts));
+    const planeSize = Math.max(460, Math.min(760, 320 + maxInLayer * 34));
 
     const links = payload.edges.map(e => {
         const type = e.data.type || '';
@@ -806,7 +877,7 @@ const render3D = (payload) => {
         .nodeVal('val')
         .nodeLabel(node => `${node.name} (${node.group})`)
         .nodeThreeObjectExtend(true)
-        .nodeThreeObject(node => (show3DLabels.value ? createTextSprite(node) : null))
+        .nodeThreeObject(node => (store.threeOptions.showLabels ? createTextSprite(node) : null))
         .linkLabel('name')
         .linkColor(link => (link.isSystemic ? '#b0b8c1' : '#7a869a'))
         .linkWidth(link => (link.isSystemic ? 0.8 : 1.4))
@@ -821,8 +892,9 @@ const render3D = (payload) => {
         .onEngineStop(() => {
             if (!hasFitted && threeGraphInstance) {
                 hasFitted = true;
-                if (is3DLayered.value) {
-                    threeGraphInstance.cameraPosition({ x: 380, y: 220, z: 480 }, { x: 0, y: 0, z: 0 }, 700);
+                if (layered) {
+                    const camDist = planeSize * 0.95;
+                    threeGraphInstance.cameraPosition({ x: camDist * 0.72, y: 200, z: camDist * 0.9 }, { x: 0, y: 0, z: 0 }, 700);
                 } else {
                     threeGraphInstance.zoomToFit(600, 60);
                 }
@@ -830,12 +902,26 @@ const render3D = (payload) => {
         });
 
     const linkForce = threeGraphInstance.d3Force('link');
-    if (linkForce) linkForce.distance(110);
+    if (linkForce) linkForce.distance(layered ? 95 : 110);
     const chargeForce = threeGraphInstance.d3Force('charge');
-    if (chargeForce) chargeForce.strength(-360);
+    if (chargeForce) chargeForce.strength(layered ? -260 : -360);
 
-    if (is3DLayered.value) {
-        add3DLayerPlanes(nodes);
+    // Keep all nodes strictly within the horizontal bounds of the visual ISO planes
+    if (layered) {
+        const limit = planeSize / 2 - 28;
+        threeGraphInstance.d3Force('planeBounds', () => {
+            nodes.forEach((n) => {
+                if (typeof n.x === 'number') {
+                    if (n.x > limit) { n.x = limit; n.vx = 0; }
+                    else if (n.x < -limit) { n.x = -limit; n.vx = 0; }
+                }
+                if (typeof n.z === 'number') {
+                    if (n.z > limit) { n.z = limit; n.vz = 0; }
+                    else if (n.z < -limit) { n.z = -limit; n.vz = 0; }
+                }
+            });
+        });
+        add3DLayerPlanes(nodes, planeSize);
     }
 
     if (currentStepState.value || searchMatchSet.value !== null) {
@@ -852,8 +938,8 @@ const fitView = () => {
     } else if (store.activeEngine === 'visjs' && visNetworkInstance) {
         visNetworkInstance.fit({ animation: { duration: 400, easingFunction: 'easeInOutQuad' } });
     } else if (store.activeEngine === '3d' && threeGraphInstance) {
-        if (is3DLayered.value) {
-            threeGraphInstance.cameraPosition({ x: 380, y: 220, z: 480 }, { x: 0, y: 0, z: 0 }, 600);
+        if (store.threeOptions.isLayered) {
+            threeGraphInstance.cameraPosition({ x: 380, y: 210, z: 480 }, { x: 0, y: 0, z: 0 }, 600);
         } else {
             threeGraphInstance.zoomToFit(500, 60);
         }
@@ -865,36 +951,36 @@ const toggleSummaryDrawer = () => {
     if (showSummaryDrawer.value) selectedNodeInfo.value = null;
 };
 
-// Re-render when payload or engine changes
-watch(() => [store.renderPayload, store.activeEngine], async ([newPayload, engine]) => {
-    selectedNodeInfo.value = null;
-    stopAutoPlay();
-    stepperActive.value = false;
-    flowSteps.value = [];
-    searchQuery.value = '';
-    searchFocusIdx.value = 0;
-    showSummaryDrawer.value = Boolean(newPayload?.analysisSummary);
+// Re-render graph when payload, graph engine, or active workspace view changes
+watch(
+    () => [store.renderPayload, store.activeEngine, store.activeView],
+    async ([newPayload, engine, view]) => {
+        selectedNodeInfo.value = null;
+        stopAutoPlay();
+        stepperActive.value = false;
+        flowSteps.value = [];
+        searchQuery.value = '';
+        searchFocusIdx.value = 0;
+        showSummaryDrawer.value = Boolean(newPayload?.analysisSummary);
 
-    if (engine === 'n2' || engine === 'insights') {
-        destroyRenderers();
-        return;
-    }
+        if (view !== 'graph' || !newPayload || newPayload.nodes.size === 0) {
+            destroyRenderers();
+            return;
+        }
 
-    if (!newPayload || newPayload.nodes.size === 0) {
-        destroyRenderers();
-        return;
-    }
-    errorContent.value = '';
-    await nextTick();
-    if (engine === 'mermaid') await renderMermaid(newPayload, false);
-    else if (engine === 'visjs') renderVisJs(newPayload);
-    else if (engine === '3d') render3D(newPayload);
-}, { deep: true });
+        errorContent.value = '';
+        await nextTick();
+        if (engine === 'mermaid') await renderMermaid(newPayload, false);
+        else if (engine === 'visjs') renderVisJs(newPayload);
+        else if (engine === '3d') render3D(newPayload);
+    },
+    { deep: true }
+);
 
 // React to step or search changes without resetting layout
 watch([stepperActive, currentStepIdx, searchQuery], async () => {
     searchFocusIdx.value = 0;
-    if (store.renderPayload.nodes.size === 0) return;
+    if (store.activeView !== 'graph' || store.renderPayload.nodes.size === 0) return;
     if (store.activeEngine === 'mermaid') {
         await renderMermaid(store.renderPayload, true);
     } else if (store.activeEngine === 'visjs') {
@@ -905,12 +991,15 @@ watch([stepperActive, currentStepIdx, searchQuery], async () => {
 });
 
 // Re-render 3D when 3D view options change
-watch([show3DLabels, is3DLayered], async () => {
-    if (store.activeEngine === '3d' && store.renderPayload.nodes.size > 0) {
-        await nextTick();
-        render3D(store.renderPayload);
+watch(
+    () => [store.threeOptions.showLabels, store.threeOptions.isLayered],
+    async () => {
+        if (store.activeView === 'graph' && store.activeEngine === '3d' && store.renderPayload.nodes.size > 0) {
+            await nextTick();
+            render3D(store.renderPayload);
+        }
     }
-});
+);
 
 // --- UNIVERSAL PNG EXPORT ---
 const exportImage = () => {
@@ -978,6 +1067,7 @@ const exportImage = () => {
 };
 
 const handleResize = () => {
+    if (store.activeView !== 'graph') return;
     if (store.activeEngine === '3d' && threeGraphInstance && threeDiv.value) {
         threeGraphInstance.width(threeDiv.value.clientWidth);
         threeGraphInstance.height(threeDiv.value.clientHeight);
@@ -998,193 +1088,303 @@ onUnmounted(() => {
 
 <template>
   <div class="canvas-container">
-    <!-- Loading Overlay -->
-    <div v-if="store.isLoading" class="status-overlay">
-        <div class="spinner"></div>
-        <h3>Loading ISO 15288 Model...</h3>
-        <p>Parsing ArchiMate graph elements and relationships</p>
-    </div>
 
-    <!-- Fallback Upload Overlay if model failed or missing -->
-    <div v-else-if="!store.isLoaded" class="upload-overlay">
-        <h3>Model Not Loaded</h3>
-        <p v-if="store.loadError" class="overlay-error">{{ store.loadError }}</p>
-        <p v-else>Please choose an ArchiMate Open Exchange XML file.</p>
-        <input type="file" accept=".xml" ref="fileInput" @change="handleFileUpload" style="display: none" />
-        <button class="upload-btn" @click="fileInput.click()">📁 Choose File</button>
-    </div>
+    <!-- Permanent Top Workspace Navigation Bar -->
+    <header class="workspace-nav">
+      <nav class="workspace-tabs">
+        <button
+          v-for="tab in workspaceTabs"
+          :key="tab.id"
+          :class="['ws-tab', { active: store.activeView === tab.id }]"
+          :disabled="!store.isLoaded && tab.id !== 'graph'"
+          @click="store.activeView = tab.id"
+        >
+          {{ tab.label }}
+        </button>
+      </nav>
 
-    <!-- N2 / DSM Matrix Engine -->
-    <N2Matrix v-else-if="store.activeEngine === 'n2'" />
+      <div class="workspace-actions">
+        <button
+          class="share-btn"
+          :disabled="!store.isLoaded"
+          @click="copyShareLink"
+          title="Copy a direct link to this view, global settings, and current diagram"
+        >
+          {{ shareStatus || '🔗 Share Link' }}
+        </button>
+      </div>
+    </header>
 
-    <!-- Insights, Practitioner Checklist & Dictionary Workspace -->
-    <InsightsView v-else-if="store.activeEngine === 'insights'" />
+    <!-- Main Workspace Stage -->
+    <div class="workspace-stage">
+      <!-- Loading Overlay -->
+      <div v-if="store.isLoading" class="status-overlay">
+          <div class="spinner"></div>
+          <h3>Loading ISO 15288 Model...</h3>
+          <p>Parsing ArchiMate graph elements and relationships</p>
+      </div>
 
-    <!-- Empty State Guide -->
-    <div v-else-if="store.renderPayload.nodes.size === 0" class="empty-state">
-        <div class="empty-icon">📐</div>
-        <h3>{{ store.modelName }} Ready</h3>
-        <p>Select an analysis scenario and parameters in the sidebar, then click <strong>"Generate Diagram"</strong> — or switch directly to <strong>N2 / DSM Matrix</strong> or <strong>Insights &amp; Checklist</strong>.</p>
-        <div class="model-quick-stats">
-          <span class="stat-pill">Processes: <strong>{{ Object.keys(store.processes).length }}</strong></span>
-          <span class="stat-pill">Business Objects: <strong>{{ Object.keys(store.businessObjects).length }}</strong></span>
+      <!-- Fallback Upload Overlay -->
+      <div v-else-if="!store.isLoaded" class="upload-overlay">
+          <h3>Model Not Loaded</h3>
+          <p v-if="store.loadError" class="overlay-error">{{ store.loadError }}</p>
+          <p v-else>Please choose an ArchiMate Open Exchange XML file.</p>
+          <input type="file" accept=".xml" ref="fileInput" @change="handleFileUpload" style="display: none" />
+          <button class="upload-btn" @click="fileInput.click()">📁 Choose File</button>
+      </div>
+
+      <!-- Whole-Model Workspaces -->
+      <N2Matrix v-else-if="store.activeView === 'n2'" />
+      <InsightsView v-else-if="['checklist', 'hotspots', 'dictionary'].includes(store.activeView)" />
+
+      <!-- Scenario Graph: Empty State -->
+      <div v-else-if="store.renderPayload.nodes.size === 0" class="empty-state">
+          <div class="empty-icon">📐</div>
+          <h3>{{ store.modelName }} Ready</h3>
+          <p>Configure a scenario in the left sidebar and click <strong>"Generate Diagram"</strong>, or explore the full model using the tabs above.</p>
+          <div class="model-quick-stats">
+            <span class="stat-pill">Processes: <strong>{{ Object.keys(store.processes).length }}</strong></span>
+            <span class="stat-pill">Business Objects: <strong>{{ Object.keys(store.businessObjects).length }}</strong></span>
+          </div>
+      </div>
+
+      <!-- Scenario Graph: Render Targets -->
+      <template v-else>
+        <div
+          v-if="store.activeEngine === 'mermaid'"
+          ref="mermaidDiv"
+          class="render-div"
+          @click="handleMermaidBackgroundClick"
+        ></div>
+        <div v-if="store.activeEngine === 'visjs'" ref="visDiv" class="render-div"></div>
+        <div v-if="store.activeEngine === '3d'" ref="threeDiv" class="render-div"></div>
+
+        <!-- Floating Canvas Controls + In-Canvas Search -->
+        <div class="canvas-toolbar">
+            <button class="toolbar-btn" @click="fitView" title="Fit diagram to viewport">🎯 Fit View</button>
+            <button
+              v-if="store.renderPayload.edges.length > 0"
+              :class="['toolbar-btn', { active: stepperActive }]"
+              @click="toggleStepper"
+              title="Step through data flow wave by wave"
+            >
+              {{ stepperActive ? '⏹ Exit Stepper' : '▶ Step Flow' }}
+            </button>
+            <button
+              v-if="store.renderPayload.analysisSummary"
+              :class="['toolbar-btn', { active: showSummaryDrawer }]"
+              @click="toggleSummaryDrawer"
+              title="Toggle audit / impact summary report"
+            >
+              📊 Report
+            </button>
+
+            <!-- In-Canvas Text Search -->
+            <div class="toolbar-search-box">
+                <span class="search-icon">🔍</span>
+                <input
+                  type="text"
+                  v-model="searchQuery"
+                  class="toolbar-search-input"
+                  placeholder="Highlight node..."
+                  @keydown.enter="focusNextSearchMatch"
+                />
+                <span v-if="searchQuery.trim()" :class="['search-badge', { zero: searchMatchList.length === 0 }]">
+                    {{ searchMatchList.length }}
+                </span>
+                <button
+                  v-if="searchMatchList.length > 0 && store.activeEngine !== 'mermaid'"
+                  class="search-action-btn"
+                  @click="focusNextSearchMatch"
+                  title="Focus next matching node (Enter)"
+                >
+                  ↳
+                </button>
+                <button
+                  v-if="searchQuery"
+                  class="search-clear-btn"
+                  @click="clearSearch"
+                  title="Clear search"
+                >
+                  ×
+                </button>
+            </div>
+
+            <template v-if="store.activeEngine === '3d'">
+                <label class="toolbar-toggle">
+                    <input type="checkbox" v-model="store.threeOptions.showLabels" />
+                    Labels
+                </label>
+                <label class="toolbar-toggle" title="Separate ISO 15288 process groups onto visual horizontal planes">
+                    <input type="checkbox" v-model="store.threeOptions.isLayered" />
+                    ISO Layers
+                </label>
+            </template>
         </div>
+
+        <!-- Step-by-Step Flow Player Bar -->
+        <div v-if="stepperActive && flowSteps.length > 0" class="stepper-bar">
+            <div class="stepper-controls">
+                <button class="step-btn" @click="resetStepper" title="Restart">⏮</button>
+                <button class="step-btn" @click="prevStep" :disabled="currentStepIdx === 0" title="Previous step">◀</button>
+                <button class="step-btn play-btn" @click="toggleAutoPlay" :title="isPlaying ? 'Pause' : 'Auto-play'">
+                    {{ isPlaying ? '⏸' : '▶' }}
+                </button>
+                <button class="step-btn" @click="nextStep" :disabled="currentStepIdx >= flowSteps.length - 1" title="Next step">▶</button>
+                <span class="step-counter">Step {{ currentStepIdx + 1 }} / {{ flowSteps.length }}</span>
+            </div>
+            <div class="step-summary" :title="currentStepState?.summary">
+                {{ currentStepState?.summary }}
+            </div>
+        </div>
+
+        <!-- Analysis Summary Drawer -->
+        <div v-if="showSummaryDrawer && store.renderPayload.analysisSummary && !selectedNodeInfo" class="summary-panel">
+            <button class="info-close-btn" @click="showSummaryDrawer = false" aria-label="Close">&times;</button>
+            <h3>{{ store.renderPayload.analysisSummary.title }}</h3>
+            <p class="summary-sub">{{ store.renderPayload.analysisSummary.subtitle }}</p>
+
+            <div class="summary-metrics">
+                <div v-for="m in store.renderPayload.analysisSummary.metrics" :key="m.label" class="metric-box">
+                    <span class="metric-val">{{ m.value }}</span>
+                    <span class="metric-lbl">{{ m.label }}</span>
+                </div>
+            </div>
+
+            <div v-for="sec in store.renderPayload.analysisSummary.sections" :key="sec.title" class="summary-section">
+                <h4 :class="['sec-title', sec.tone]">{{ sec.title }}</h4>
+                <div v-if="sec.items.length === 0" class="summary-empty">None</div>
+                <ul v-else class="summary-list">
+                    <li v-for="(item, idx) in sec.items" :key="idx">
+                        <span class="sum-item-label">{{ item.label }}</span>
+                        <span v-if="item.detail" class="sum-item-detail">{{ item.detail }}</span>
+                    </li>
+                </ul>
+            </div>
+        </div>
+
+        <!-- Info Panel (Node details) -->
+        <div v-if="selectedNodeInfo" class="info-panel">
+            <button class="info-close-btn" @click="selectedNodeInfo = null" aria-label="Close">&times;</button>
+            <span class="info-group-tag">{{ selectedNodeInfo.group }}</span>
+            <h3>{{ selectedNodeInfo.name }}</h3>
+            <p>{{ selectedNodeInfo.doc }}</p>
+        </div>
+
+        <!-- Universal Legend -->
+        <div class="legend-panel">
+            <h4>Legend</h4>
+            <div class="legend-item"><span class="color-box process"></span> Process / Function</div>
+            <div class="legend-item"><span class="color-box object"></span> Object / Artifact</div>
+            <div class="legend-item"><span class="line solid"></span> Standard Flow</div>
+            <div class="legend-item"><span class="line dashed"></span> Systemic (Enables/Controls/Situational)</div>
+        </div>
+
+        <div v-if="errorContent" class="error-panel">
+          <h4>❌ Diagram Rendering Error</h4>
+          <pre>{{ errorContent }}</pre>
+        </div>
+
+        <!-- Export Image Button -->
+        <div class="export-image-container">
+          <button class="export-btn" @click="exportImage">📸 Export PNG</button>
+        </div>
+      </template>
     </div>
 
-    <!-- Graph Render Targets -->
-    <template v-else>
-      <div
-        v-if="store.activeEngine === 'mermaid'"
-        ref="mermaidDiv"
-        class="render-div"
-        @click="handleMermaidBackgroundClick"
-      ></div>
-      <div v-if="store.activeEngine === 'visjs'" ref="visDiv" class="render-div"></div>
-      <div v-if="store.activeEngine === '3d'" ref="threeDiv" class="render-div"></div>
-
-      <!-- Top-Left Canvas Controls + In-Canvas Search -->
-      <div class="canvas-toolbar">
-          <button class="toolbar-btn" @click="fitView" title="Fit diagram to viewport">🎯 Fit View</button>
-          <button
-            v-if="store.renderPayload.edges.length > 0"
-            :class="['toolbar-btn', { active: stepperActive }]"
-            @click="toggleStepper"
-            title="Step through data flow wave by wave"
-          >
-            {{ stepperActive ? '⏹ Exit Stepper' : '▶ Step Flow' }}
-          </button>
-          <button
-            v-if="store.renderPayload.analysisSummary"
-            :class="['toolbar-btn', { active: showSummaryDrawer }]"
-            @click="toggleSummaryDrawer"
-            title="Toggle audit / impact summary report"
-          >
-            📊 Report
-          </button>
-
-          <!-- In-Canvas Text Search -->
-          <div class="toolbar-search-box">
-              <span class="search-icon">🔍</span>
-              <input
-                type="text"
-                v-model="searchQuery"
-                class="toolbar-search-input"
-                placeholder="Highlight node..."
-                @keydown.enter="focusNextSearchMatch"
-              />
-              <span v-if="searchQuery.trim()" :class="['search-badge', { zero: searchMatchList.length === 0 }]">
-                  {{ searchMatchList.length }}
-              </span>
-              <button
-                v-if="searchMatchList.length > 0 && store.activeEngine !== 'mermaid'"
-                class="search-action-btn"
-                @click="focusNextSearchMatch"
-                title="Focus next matching node (Enter)"
-              >
-                ↳
-              </button>
-              <button
-                v-if="searchQuery"
-                class="search-clear-btn"
-                @click="clearSearch"
-                title="Clear search"
-              >
-                ×
-              </button>
-          </div>
-
-          <template v-if="store.activeEngine === '3d'">
-              <label class="toolbar-toggle">
-                  <input type="checkbox" v-model="show3DLabels" />
-                  Labels
-              </label>
-              <label class="toolbar-toggle" title="Separate ISO 15288 process groups onto visual horizontal planes">
-                  <input type="checkbox" v-model="is3DLayered" />
-                  ISO Layers
-              </label>
-          </template>
-      </div>
-
-      <!-- Step-by-Step Flow Player Bar -->
-      <div v-if="stepperActive && flowSteps.length > 0" class="stepper-bar">
-          <div class="stepper-controls">
-              <button class="step-btn" @click="resetStepper" title="Restart">⏮</button>
-              <button class="step-btn" @click="prevStep" :disabled="currentStepIdx === 0" title="Previous step">◀</button>
-              <button class="step-btn play-btn" @click="toggleAutoPlay" :title="isPlaying ? 'Pause' : 'Auto-play'">
-                  {{ isPlaying ? '⏸' : '▶' }}
-              </button>
-              <button class="step-btn" @click="nextStep" :disabled="currentStepIdx >= flowSteps.length - 1" title="Next step">▶</button>
-              <span class="step-counter">Step {{ currentStepIdx + 1 }} / {{ flowSteps.length }}</span>
-          </div>
-          <div class="step-summary" :title="currentStepState?.summary">
-              {{ currentStepState?.summary }}
-          </div>
-      </div>
-
-      <!-- Analysis Summary Drawer (Blast Radius / Tailoring Gap Check) -->
-      <div v-if="showSummaryDrawer && store.renderPayload.analysisSummary && !selectedNodeInfo" class="summary-panel">
-          <button class="info-close-btn" @click="showSummaryDrawer = false" aria-label="Close">&times;</button>
-          <h3>{{ store.renderPayload.analysisSummary.title }}</h3>
-          <p class="summary-sub">{{ store.renderPayload.analysisSummary.subtitle }}</p>
-
-          <div class="summary-metrics">
-              <div v-for="m in store.renderPayload.analysisSummary.metrics" :key="m.label" class="metric-box">
-                  <span class="metric-val">{{ m.value }}</span>
-                  <span class="metric-lbl">{{ m.label }}</span>
-              </div>
-          </div>
-
-          <div v-for="sec in store.renderPayload.analysisSummary.sections" :key="sec.title" class="summary-section">
-              <h4 :class="['sec-title', sec.tone]">{{ sec.title }}</h4>
-              <div v-if="sec.items.length === 0" class="summary-empty">None</div>
-              <ul v-else class="summary-list">
-                  <li v-for="(item, idx) in sec.items" :key="idx">
-                      <span class="sum-item-label">{{ item.label }}</span>
-                      <span v-if="item.detail" class="sum-item-detail">{{ item.detail }}</span>
-                  </li>
-              </ul>
-          </div>
-      </div>
-
-      <!-- Info Panel (Node details) -->
-      <div v-if="selectedNodeInfo" class="info-panel">
-          <button class="info-close-btn" @click="selectedNodeInfo = null" aria-label="Close">&times;</button>
-          <span class="info-group-tag">{{ selectedNodeInfo.group }}</span>
-          <h3>{{ selectedNodeInfo.name }}</h3>
-          <p>{{ selectedNodeInfo.doc }}</p>
-      </div>
-
-      <!-- Universal Legend -->
-      <div class="legend-panel">
-          <h4>Legend</h4>
-          <div class="legend-item"><span class="color-box process"></span> Process / Function</div>
-          <div class="legend-item"><span class="color-box object"></span> Object / Artifact</div>
-          <div class="legend-item"><span class="line solid"></span> Standard Flow</div>
-          <div class="legend-item"><span class="line dashed"></span> Systemic (Enables/Controls/Situational)</div>
-      </div>
-
-      <div v-if="errorContent" class="error-panel">
-        <h4>❌ Diagram Rendering Error</h4>
-        <pre>{{ errorContent }}</pre>
-      </div>
-
-      <!-- Export Image Button -->
-      <div class="export-image-container">
-        <button class="export-btn" @click="exportImage">📸 Export PNG</button>
-      </div>
-    </template>
   </div>
 </template>
 
 <style scoped>
-.canvas-container { width: 100%; height: 100%; position: relative; background: #ffffff; overflow: hidden; }
+.canvas-container {
+    display: flex;
+    flex-direction: column;
+    width: 100%;
+    height: 100%;
+    background: #ffffff;
+    overflow: hidden;
+}
+
+/* Top Workspace Navigation Bar */
+.workspace-nav {
+    flex-shrink: 0;
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: space-between;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 16px;
+    background: #ffffff;
+    border-bottom: 1px solid #e0e4e8;
+    z-index: 110;
+}
+.workspace-tabs {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+}
+.ws-tab {
+    padding: 6px 12px;
+    border-radius: 6px;
+    border: 1px solid #d0d7de;
+    background: #f6f8fa;
+    color: #334155;
+    font-size: 12.5px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.15s;
+}
+.ws-tab:hover:not(:disabled) { background: #eaeef2; }
+.ws-tab.active {
+    background: #4CAF50;
+    color: #ffffff;
+    border-color: #4CAF50;
+}
+.ws-tab:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+}
+
+.workspace-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+.share-btn {
+    padding: 6px 12px;
+    border-radius: 6px;
+    border: 1px solid #cbd5e1;
+    background: #ffffff;
+    color: #1e293b;
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.15s;
+}
+.share-btn:hover:not(:disabled) {
+    background: #f1f5f9;
+    border-color: #94a3b8;
+}
+.share-btn:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+}
+
+.workspace-stage {
+    flex: 1 1 0;
+    min-height: 0;
+    position: relative;
+    overflow: hidden;
+    background: #ffffff;
+}
+
 .render-div { width: 100%; height: 100%; overflow: hidden; outline: none; }
 
 /* Floating Canvas Toolbar */
 .canvas-toolbar {
-    position: absolute; top: 18px; left: 20px; z-index: 100;
+    position: absolute; top: 14px; left: 16px; z-index: 100;
     display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
-    max-width: calc(100% - 40px);
+    max-width: calc(100% - 32px);
     background: rgba(255, 255, 255, 0.94);
     border: 1px solid #d0d7de; border-radius: 8px;
     padding: 6px 10px; box-shadow: 0 3px 8px rgba(0, 0, 0, 0.08);
@@ -1264,16 +1464,14 @@ onUnmounted(() => {
 
 /* Analysis Summary Drawer */
 .summary-panel {
-    position: absolute; top: 20px; right: 20px; width: 350px; max-height: calc(100% - 110px);
+    position: absolute; top: 16px; right: 16px; width: 350px; max-height: calc(100% - 100px);
     background: #ffffff; border: 1px solid #d0d7de; border-radius: 8px;
     box-shadow: 0 10px 25px rgba(0, 0, 0, 0.14); padding: 18px;
     overflow-y: auto; z-index: 950;
 }
 .summary-panel h3 { margin: 0 0 4px 0; padding-right: 28px; font-size: 16px; color: #1e293b; }
 .summary-sub { margin: 0 0 12px 0; font-size: 12px; color: #64748b; }
-.summary-metrics {
-    display: flex; gap: 8px; margin-bottom: 14px;
-}
+.summary-metrics { display: flex; gap: 8px; margin-bottom: 14px; }
 .metric-box {
     flex: 1; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 6px;
     padding: 8px; text-align: center; display: flex; flex-direction: column;
@@ -1286,10 +1484,7 @@ onUnmounted(() => {
 .sec-title.warning { color: #c05621; }
 .sec-title.ok { color: #2e7d32; }
 .summary-empty { font-size: 12px; color: #94a3b8; font-style: italic; }
-.summary-list {
-    list-style: none; padding: 0; margin: 0;
-    display: flex; flex-direction: column; gap: 5px;
-}
+.summary-list { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 5px; }
 .summary-list li {
     background: #f8fafc; border: 1px solid #edf2f7; border-radius: 5px;
     padding: 6px 8px; display: flex; flex-direction: column; gap: 2px;
@@ -1302,7 +1497,7 @@ onUnmounted(() => {
 
 /* Info Panel Styles */
 .info-panel {
-    position: absolute; top: 20px; right: 20px; width: 350px; max-height: 80vh;
+    position: absolute; top: 16px; right: 16px; width: 350px; max-height: calc(100% - 100px);
     background: #ffffff; border: 1px solid #e0e0e0; border-radius: 8px;
     box-shadow: 0 10px 25px rgba(0,0,0,0.2); padding: 20px; overflow-y: auto; z-index: 1000;
 }
@@ -1325,21 +1520,21 @@ onUnmounted(() => {
 
 /* Legend Styles */
 .legend-panel {
-    position: absolute; bottom: 25px; left: 25px; background: rgba(255,255,255,0.9);
-    padding: 15px; border-radius: 8px; border: 1px solid #ccc; box-shadow: 0 4px 6px rgba(0,0,0,0.1); z-index: 100;
+    position: absolute; bottom: 20px; left: 20px; background: rgba(255,255,255,0.9);
+    padding: 14px; border-radius: 8px; border: 1px solid #ccc; box-shadow: 0 4px 6px rgba(0,0,0,0.1); z-index: 100;
 }
-.legend-panel h4 { margin: 0 0 10px 0; font-size: 14px; text-transform: uppercase; color: #555; }
-.legend-item { display: flex; align-items: center; gap: 10px; font-size: 12px; margin-bottom: 6px; color: #333; }
-.color-box { width: 16px; height: 16px; border-radius: 4px; display: inline-block; border: 1px solid rgba(0,0,0,0.2); }
+.legend-panel h4 { margin: 0 0 8px 0; font-size: 13px; text-transform: uppercase; color: #555; }
+.legend-item { display: flex; align-items: center; gap: 10px; font-size: 12px; margin-bottom: 5px; color: #333; }
+.color-box { width: 15px; height: 15px; border-radius: 4px; display: inline-block; border: 1px solid rgba(0,0,0,0.2); }
 .color-box.process { background: #FFF2CC; }
 .color-box.object { background: #D5E8D4; }
-.line { width: 16px; height: 2px; display: inline-block; background: transparent; }
+.line { width: 15px; height: 2px; display: inline-block; background: transparent; }
 .line.solid { border-top: 2px solid #848484; }
 .line.dashed { border-top: 2px dashed #848484; }
 
 /* Export PNG Button */
-.export-image-container { position: absolute; bottom: 25px; right: 25px; z-index: 100; }
-.export-btn { background: #ffffff; border: 1px solid #ccc; padding: 10px 18px; border-radius: 8px; cursor: pointer; font-size: 14px; font-weight: bold; box-shadow: 0 4px 6px rgba(0,0,0,0.1); transition: all 0.2s; }
+.export-image-container { position: absolute; bottom: 20px; right: 20px; z-index: 100; }
+.export-btn { background: #ffffff; border: 1px solid #ccc; padding: 10px 16px; border-radius: 8px; cursor: pointer; font-size: 13px; font-weight: bold; box-shadow: 0 4px 6px rgba(0,0,0,0.1); transition: all 0.2s; }
 .export-btn:hover { background: #f0f0f0; transform: translateY(-2px); box-shadow: 0 6px 12px rgba(0,0,0,0.15); }
 
 .error-panel { position: absolute; top: 20px; left: 50%; transform: translateX(-50%); background: #ffebee; color: #c62828; padding: 15px 25px; border-radius: 8px; border: 1px solid #ef9a9a; z-index: 1000; max-width: 80%; }
@@ -1374,5 +1569,9 @@ onUnmounted(() => {
 .stat-pill {
     background: #ffffff; border: 1px solid #d0d7de; padding: 6px 14px;
     border-radius: 20px; font-size: 0.85rem; color: #444; box-shadow: 0 1px 3px rgba(0,0,0,0.04);
+}
+
+@media (max-width: 768px) {
+    .workspace-nav { padding-left: 105px; }
 }
 </style>

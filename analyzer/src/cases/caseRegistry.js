@@ -25,3 +25,18 @@ export const casesList = Object.values(CaseRegistry).map(c => ({
     name: c.name,
     description: c.description
 }));
+
+export const groupedCases = [
+    {
+        label: 'Connections & Paths',
+        items: [Case1, Case2, Case3, Case4, Case6]
+    },
+    {
+        label: 'Process Context',
+        items: [Case5, Case7]
+    },
+    {
+        label: 'Impact & Tailoring Audit',
+        items: [Case8, Case9]
+    }
+];

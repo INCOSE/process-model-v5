@@ -1,7 +1,14 @@
 <script setup>
 import { ref, computed, watch } from 'vue';
-import { store, graphData, applyModelXml, loadDefaultModel } from '../store/graphStore.js';
-import { CaseRegistry, casesList } from '../cases/caseRegistry.js';
+import {
+  store,
+  graphData,
+  applyModelXml,
+  loadDefaultModel,
+  getCaseDefaults,
+  executeActiveCase
+} from '../store/graphStore.js';
+import { CaseRegistry, groupedCases } from '../cases/caseRegistry.js';
 import { iso15288Mapping } from '../core/iso15288Groups.js';
 import SearchableSelect from './SearchableSelect.vue';
 
@@ -50,24 +57,14 @@ const getGroupedOptions = (sourceKey) => {
 
 const activeCase = computed(() => CaseRegistry[store.activeCaseId]);
 
-// Reset and initialise case default parameters when switching cases
-watch(
-  () => store.activeCaseId,
-  () => {
-    const defaults = {};
-    if (activeCase.value?.inputs) {
-      activeCase.value.inputs.forEach((inp) => {
-        if (inp.default !== undefined) defaults[inp.key] = inp.default;
-      });
-    }
-    store.caseParams = defaults;
-    store.uiMessage = { text: '', type: '' };
-  },
-  { immediate: true }
-);
+// Only reset parameters when the user explicitly switches scenario in the dropdown
+const handleCaseChange = () => {
+  store.caseParams = getCaseDefaults(store.activeCaseId);
+  store.uiMessage = { text: '', type: '' };
+};
 
 watch(() => store.caseParams.pCenter, (newVal, oldVal) => {
-  if (newVal !== oldVal && store.activeCaseId === 'case_7') {
+  if (oldVal !== undefined && newVal !== oldVal && store.activeCaseId === 'case_7') {
     store.caseParams.selectedInputs = [];
     store.caseParams.selectedOutputs = [];
   }
@@ -106,37 +103,7 @@ const getDynamicOptions = (sourceKey) => {
 };
 
 const runAnalysis = () => {
-  if (!store.isLoaded) return;
-
-  const ctx = {
-    gActive: graphData.gActive(),
-    gFull: graphData.gFull,
-    settings: store.settings
-  };
-
-  const result = activeCase.value.execute(ctx, store.caseParams);
-
-  if (result.error) {
-    store.uiMessage = { text: result.message, type: 'error' };
-    return;
-  }
-
-  store.uiMessage = { text: result.message || 'Diagram generated!', type: result.warning ? 'warning' : 'success' };
-
-  // If user was on Insights tab, switch back to Mermaid so they see the generated diagram
-  if (store.activeEngine === 'insights') {
-    store.activeEngine = 'mermaid';
-  }
-
-  store.renderPayload = {
-    nodes: result.nodes,
-    edges: result.edges,
-    highlightedNodes: result.highlightedNodes || new Set(),
-    renderSubgraphs: result.renderSubgraphs || false,
-    customLabels: result.customLabels || {},
-    orderedPath: result.orderedPath || null,
-    analysisSummary: result.analysisSummary || null
-  };
+  executeActiveCase(true);
 };
 
 const clearDiagram = () => {
@@ -187,10 +154,10 @@ const exportJson = () => {
 <template>
   <div class="sidebar-content">
 
-    <!-- 0. Model Source -->
+    <!-- 1. Model Source -->
     <div class="section model-section">
       <div class="model-header">
-        <label class="section-title">Model Source:</label>
+        <label class="section-title">Model Source</label>
         <span class="status-badge" :class="{ active: store.isLoaded, loading: store.isLoading }">
           {{ store.isLoading ? 'Loading...' : (store.isLoaded ? 'Active' : 'Not Loaded') }}
         </span>
@@ -223,22 +190,13 @@ const exportJson = () => {
 
     <hr class="divider" />
 
-    <!-- 1. Case Selection -->
-    <div class="section">
-      <label class="section-title">Select analysis scenario:</label>
-      <select v-model="store.activeCaseId" class="case-select">
-        <option v-for="c in casesList" :key="c.id" :value="c.id">
-          {{ c.name }}
-        </option>
-      </select>
-      <p class="description-text">{{ activeCase?.description }}</p>
-    </div>
+    <!-- 2. Global Model Settings (Always visible — applies to Graphs, N2 Matrix, Checklist & Hotspots) -->
+    <div class="section global-settings-box">
+      <div class="section-header-row">
+        <label class="section-title">Global Model Settings</label>
+        <span class="scope-hint" title="Applies across Scenario Graphs, N2 Matrix, Checklist, and Hotspots">All views</span>
+      </div>
 
-    <hr class="divider" />
-
-    <!-- 2. Global Settings -->
-    <div class="section">
-      <label class="section-title">Global Settings:</label>
       <label class="checkbox-label">
         <input type="checkbox" v-model="store.settings.useHierarchy" />
         Include derived connections (Hierarchy)
@@ -248,7 +206,7 @@ const exportJson = () => {
         Show relations between boundary objects
       </label>
 
-      <label class="section-title" style="margin-top: 10px;">Meta-Level Inheritance:</label>
+      <label class="sub-title">Meta-Level Inheritance</label>
       <label class="checkbox-label">
         <input type="checkbox" v-model="store.settings.includeEnables" />
         Inherit Enables
@@ -265,70 +223,83 @@ const exportJson = () => {
 
     <hr class="divider" />
 
-    <!-- 3. Dynamic Case Parameters -->
-    <div class="section" v-if="activeCase">
-      <label class="section-title">Case Parameters:</label>
+    <!-- 3. Scenario Graph Builder -->
+    <div class="section">
+      <div class="section-header-row">
+        <label class="section-title">Scenario Graph Builder</label>
+        <span class="scope-hint">Graph tab</span>
+      </div>
 
-      <div v-for="input in activeCase.inputs" :key="input.key" class="dynamic-input">
-        <label v-if="input.type !== 'checkbox'">{{ input.label }}</label>
+      <select v-model="store.activeCaseId" @change="handleCaseChange" class="case-select">
+        <optgroup v-for="group in groupedCases" :key="group.label" :label="group.label">
+          <option v-for="c in group.items" :key="c.id" :value="c.id">
+            {{ c.name }}
+          </option>
+        </optgroup>
+      </select>
+      <p class="description-text">{{ activeCase?.description }}</p>
 
-        <SearchableSelect
-          v-if="input.type === 'multiselect'"
-          v-model="store.caseParams[input.key]"
-          :options="getGroupedOptions(input.optionsSource)"
-          :multiple="true"
-          placeholder="Select multiple items..."
-        />
+      <!-- Dynamic Case Parameters -->
+      <div v-if="activeCase" class="params-block">
+        <div v-for="input in activeCase.inputs" :key="input.key" class="dynamic-input">
+          <label v-if="input.type !== 'checkbox'">{{ input.label }}</label>
 
-        <SearchableSelect
-          v-if="input.type === 'select'"
-          v-model="store.caseParams[input.key]"
-          :options="getGroupedOptions(input.optionsSource)"
-          :multiple="false"
-          placeholder="Select an item..."
-        />
+          <SearchableSelect
+            v-if="input.type === 'multiselect'"
+            v-model="store.caseParams[input.key]"
+            :options="getGroupedOptions(input.optionsSource)"
+            :multiple="true"
+            placeholder="Select multiple items..."
+          />
 
-        <label v-if="input.type === 'checkbox'" class="checkbox-label" style="margin-top: 10px;">
-          <input type="checkbox" v-model="store.caseParams[input.key]" />
-          {{ input.label }}
-        </label>
+          <SearchableSelect
+            v-if="input.type === 'select'"
+            v-model="store.caseParams[input.key]"
+            :options="getGroupedOptions(input.optionsSource)"
+            :multiple="false"
+            placeholder="Select an item..."
+          />
 
-        <div v-if="input.type === 'radio'" class="radio-group">
-          <label v-for="opt in input.options" :key="opt.value" class="radio-label">
-            <input
-              type="radio"
-              :name="input.key"
-              :value="opt.value"
-              v-model="store.caseParams[input.key]"
-            />
-            {{ opt.label }}
+          <label v-if="input.type === 'checkbox'" class="checkbox-label" style="margin-top: 6px;">
+            <input type="checkbox" v-model="store.caseParams[input.key]" />
+            {{ input.label }}
           </label>
+
+          <div v-if="input.type === 'radio'" class="radio-group">
+            <label v-for="opt in input.options" :key="opt.value" class="radio-label">
+              <input
+                type="radio"
+                :name="input.key"
+                :value="opt.value"
+                v-model="store.caseParams[input.key]"
+              />
+              {{ opt.label }}
+            </label>
+          </div>
         </div>
-      </div>
 
-      <!-- Engine Selector -->
-      <div class="engine-selector">
-        <label class="section-title">Visualisation / Workspace:</label>
-        <div class="radio-group">
-          <label class="radio-label"><input type="radio" value="mermaid" v-model="store.activeEngine" /> Mermaid.js</label>
-          <label class="radio-label"><input type="radio" value="visjs" v-model="store.activeEngine" /> Vis.js (2D Physics)</label>
-          <label class="radio-label"><input type="radio" value="3d" v-model="store.activeEngine" /> 3D Force Graph</label>
-          <label class="radio-label"><input type="radio" value="n2" v-model="store.activeEngine" /> N2 / DSM Matrix</label>
-          <label class="radio-label"><input type="radio" value="insights" v-model="store.activeEngine" /> Insights & Checklist</label>
+        <!-- Graph Engine Selector (Only graph renderers) -->
+        <div class="engine-selector">
+          <label class="sub-title">Graph Renderer</label>
+          <div class="radio-group">
+            <label class="radio-label"><input type="radio" value="mermaid" v-model="store.activeEngine" /> Mermaid.js</label>
+            <label class="radio-label"><input type="radio" value="visjs" v-model="store.activeEngine" /> Vis.js (2D)</label>
+            <label class="radio-label"><input type="radio" value="3d" v-model="store.activeEngine" /> 3D Force</label>
+          </div>
         </div>
-      </div>
 
-      <button class="action-btn" :disabled="!store.isLoaded" @click="runAnalysis">
-        {{ store.isLoaded ? 'Generate Diagram' : 'Please Load XML First' }}
-      </button>
+        <button class="action-btn" :disabled="!store.isLoaded" @click="runAnalysis">
+          {{ store.isLoaded ? 'Generate Diagram' : 'Please Load XML First' }}
+        </button>
 
-      <div class="data-actions" v-if="store.renderPayload.nodes.size > 0">
-        <button class="export-json-btn" @click="exportJson">💾 Export Data (JSON)</button>
-        <button class="clear-btn" @click="clearDiagram">🗑️ Clear Diagram</button>
-      </div>
+        <div class="data-actions" v-if="store.renderPayload.nodes.size > 0">
+          <button class="export-json-btn" @click="exportJson">💾 Export JSON</button>
+          <button class="clear-btn" @click="clearDiagram">🗑️ Clear</button>
+        </div>
 
-      <div v-if="store.uiMessage.text" :class="['status-msg', store.uiMessage.type]">
-        {{ store.uiMessage.text }}
+        <div v-if="store.uiMessage.text" :class="['status-msg', store.uiMessage.type]">
+          {{ store.uiMessage.text }}
+        </div>
       </div>
     </div>
 
@@ -337,28 +308,41 @@ const exportJson = () => {
 
 <style scoped>
 .sidebar-content {
-  padding: 20px 20px 40px 20px;
+  padding: 16px 18px 40px 18px;
   overflow-y: auto;
   overflow-x: hidden;
   flex: 1 1 0;
   min-height: 0;
 }
-.section { display: flex; flex-direction: column; gap: 12px; }
-.section-title { font-weight: 600; font-size: 0.9rem; color: #555; }
-.description-text { font-size: 0.8rem; color: #666; margin: 0; font-style: italic; }
-.case-select { padding: 8px; border-radius: 4px; border: 1px solid #ccc; font-size: 13px; width: 100%; }
-.multiselect { height: 150px; }
-.checkbox-label { display: flex; align-items: flex-start; gap: 8px; font-size: 13px; cursor: pointer; }
-.checkbox-label input { margin-top: 3px; }
-.divider { border: 0; border-top: 1px solid #eee; margin: 20px 0; }
-.dynamic-input { display: flex; flex-direction: column; gap: 5px; font-size: 13px; }
-.dynamic-input small { color: #888; font-size: 11px; }
+.section { display: flex; flex-direction: column; gap: 10px; }
+.section-header-row { display: flex; justify-content: space-between; align-items: center; }
+.section-title { font-weight: 700; font-size: 0.88rem; color: #334155; }
+.sub-title { font-weight: 600; font-size: 0.8rem; color: #64748b; margin-top: 6px; display: block; }
+.scope-hint {
+  font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.3px;
+  padding: 2px 7px; border-radius: 10px; background: #eef2f6; color: #64748b;
+}
 
-.action-btn { background: #4CAF50; color: white; border: none; padding: 10px; border-radius: 6px; cursor: pointer; font-weight: bold; margin-top: 10px; transition: background 0.2s; }
+.global-settings-box {
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 6px;
+  padding: 12px;
+}
+
+.params-block { display: flex; flex-direction: column; gap: 10px; margin-top: 2px; }
+.description-text { font-size: 0.78rem; color: #64748b; margin: 0; font-style: italic; line-height: 1.4; }
+.case-select { padding: 8px; border-radius: 4px; border: 1px solid #ccc; font-size: 13px; width: 100%; background: #ffffff; }
+.checkbox-label { display: flex; align-items: flex-start; gap: 8px; font-size: 13px; cursor: pointer; color: #1e293b; }
+.checkbox-label input { margin-top: 3px; }
+.divider { border: 0; border-top: 1px solid #eee; margin: 16px 0; }
+.dynamic-input { display: flex; flex-direction: column; gap: 5px; font-size: 13px; }
+
+.action-btn { background: #4CAF50; color: white; border: none; padding: 10px; border-radius: 6px; cursor: pointer; font-weight: bold; margin-top: 6px; transition: background 0.2s; }
 .action-btn:hover:not(:disabled) { background: #45a049; }
 .action-btn:disabled { background: #cccccc; cursor: not-allowed; }
 
-.status-msg { padding: 10px; border-radius: 4px; font-size: 13px; margin-top: 10px; font-weight: 500; }
+.status-msg { padding: 10px; border-radius: 4px; font-size: 12.5px; margin-top: 4px; font-weight: 500; }
 .status-msg.success { background: #d4edda; color: #155724; border: 1px solid #c3e6cb; }
 .status-msg.error { background: #f8d7da; color: #721c24; border: 1px solid #f5c6cb; }
 .status-msg.warning { background: #fff3cd; color: #856404; border: 1px solid #ffeeba; }
@@ -366,10 +350,10 @@ const exportJson = () => {
 .radio-group { display: flex; flex-wrap: wrap; gap: 10px 14px; margin-top: 5px; }
 .radio-label { display: flex; align-items: center; gap: 5px; cursor: pointer; font-size: 13px; }
 
-.data-actions { display: flex; gap: 10px; margin-top: 5px; }
-.export-json-btn { flex: 1; background: #e0e0e0; border: 1px solid #ccc; padding: 8px; border-radius: 6px; cursor: pointer; font-weight: 600; font-size: 12px; transition: 0.2s; }
-.export-json-btn:hover { background: #d0d0d0; }
-.clear-btn { flex: 1; background: #ffebee; color: #c62828; border: 1px solid #ef9a9a; padding: 8px; border-radius: 6px; cursor: pointer; font-weight: 600; font-size: 12px; transition: 0.2s; }
+.data-actions { display: flex; gap: 8px; }
+.export-json-btn { flex: 1; background: #e2e8f0; border: 1px solid #cbd5e1; padding: 7px; border-radius: 6px; cursor: pointer; font-weight: 600; font-size: 12px; transition: 0.2s; }
+.export-json-btn:hover { background: #cbd5e1; }
+.clear-btn { flex: 1; background: #ffebee; color: #c62828; border: 1px solid #ef9a9a; padding: 7px; border-radius: 6px; cursor: pointer; font-weight: 600; font-size: 12px; transition: 0.2s; }
 .clear-btn:hover { background: #ffcdd2; }
 
 /* Model Section Styles */

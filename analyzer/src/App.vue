@@ -2,11 +2,43 @@
 import { ref, onMounted } from 'vue';
 import Sidebar from './components/Sidebar.vue';
 import GraphCanvas from './components/GraphCanvas.vue';
-import { loadDefaultModel } from './store/graphStore.js';
+import { store, loadDefaultModel, getCaseDefaults, executeActiveCase } from './store/graphStore.js';
+import { CaseRegistry } from './cases/caseRegistry.js';
+import { parseUrlState } from './core/urlState.js';
 
-// Auto-load default ISO 15288 model on app startup
+// Auto-load default ISO 15288 model and restore any shared URL parameters
 onMounted(async () => {
+  const urlState = parseUrlState();
+
+  // Apply global settings before XML parsing so inheritance flags take effect immediately
+  if (urlState?.settings) {
+    Object.assign(store.settings, urlState.settings);
+  }
+  if (urlState?.activeView) store.activeView = urlState.activeView;
+  if (urlState?.activeEngine) store.activeEngine = urlState.activeEngine;
+  if (urlState?.is3DLayered !== undefined) store.threeOptions.isLayered = urlState.is3DLayered;
+  if (urlState?.show3DLabels !== undefined) store.threeOptions.showLabels = urlState.show3DLabels;
+  if (urlState?.selectedChecklistProcessId) {
+    store.selectedChecklistProcessId = urlState.selectedChecklistProcessId;
+  }
+  if (urlState?.activeCaseId && CaseRegistry[urlState.activeCaseId]) {
+    store.activeCaseId = urlState.activeCaseId;
+  }
+
   await loadDefaultModel();
+
+  if (urlState?.caseParams) {
+    store.caseParams = {
+      ...getCaseDefaults(store.activeCaseId),
+      ...urlState.caseParams
+    };
+  } else {
+    store.caseParams = getCaseDefaults(store.activeCaseId);
+  }
+
+  if (urlState?.autoRun && store.isLoaded) {
+    executeActiveCase(store.activeView === 'graph');
+  }
 });
 
 // Drawer menu management for mobile screens
@@ -33,15 +65,15 @@ const toggleMenu = () => {
       <Sidebar />
     </aside>
 
-    <!-- Main graph canvas workspace -->
+    <!-- Main workspace -->
     <main class="canvas-area">
       <GraphCanvas />
     </main>
 
     <!-- Dimmed backdrop for mobile overlay -->
-    <div 
-      v-if="isMobileMenuOpen" 
-      class="mobile-overlay" 
+    <div
+      v-if="isMobileMenuOpen"
+      class="mobile-overlay"
       @click="toggleMenu"
     ></div>
   </div>
@@ -88,7 +120,7 @@ body {
   width: 350px;
   height: 100%;
   min-height: 0;
-  flex-shrink: 0; /* not shrinkable */
+  flex-shrink: 0;
   background: var(--sidebar-bg);
   border-right: 1px solid var(--border);
   display: flex;
@@ -123,7 +155,7 @@ body {
 
 .canvas-area {
   flex: 1 1 0;
-  min-width: 0; /* canvas cannot go beyond the screen */
+  min-width: 0;
   min-height: 0;
   height: 100%;
   position: relative;
@@ -134,10 +166,10 @@ body {
 .mobile-toggle {
   display: none;
   position: absolute;
-  top: 15px;
-  left: 15px;
-  z-index: 90;
-  padding: 8px 12px;
+  top: 10px;
+  left: 12px;
+  z-index: 150;
+  padding: 6px 10px;
   background: var(--sidebar-bg);
   border: 1px solid var(--border);
   border-radius: 6px;
@@ -153,7 +185,7 @@ body {
 @media (max-width: 768px) {
   .mobile-toggle { display: block; }
   .close-btn { display: block; }
-  
+
   .sidebar {
     position: fixed;
     top: 0;
@@ -162,7 +194,7 @@ body {
     height: 100%;
     transform: translateX(-100%);
   }
-  
+
   .sidebar.is-open {
     transform: translateX(0);
   }
