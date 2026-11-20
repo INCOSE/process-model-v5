@@ -8,7 +8,7 @@ import * as THREE from 'three';
 
 import { store, graphData, applyModelXml } from '../store/graphStore.js';
 import { graphToMermaidAndData } from '../renderers/mermaidGenerator.js';
-import { getProcessGroup, groupLayerY } from '../core/iso15288Groups.js';
+import { getProcessGroup, groupLayerY, groupColors } from '../core/iso15288Groups.js';
 import { buildFlowSteps } from '../core/flowStepper.js';
 import N2Matrix from './N2Matrix.vue';
 import InsightsView from './InsightsView.vue';
@@ -26,6 +26,10 @@ const showSummaryDrawer = ref(false);
 const show3DLabels = ref(true);
 const is3DLayered = ref(false);
 
+// In-canvas node search state
+const searchQuery = ref('');
+const searchFocusIdx = ref(0);
+
 // Step-by-step Flow Player state
 const stepperActive = ref(false);
 const flowSteps = ref([]);
@@ -38,11 +42,34 @@ const currentStepState = computed(() => {
     return flowSteps.value[currentStepIdx.value] || null;
 });
 
+// Matching node IDs for in-canvas search (null when query is empty)
+const searchMatchList = computed(() => {
+    const q = searchQuery.value.trim().toLowerCase();
+    if (!q || !store.renderPayload || store.renderPayload.nodes.size === 0) return [];
+    const gActive = graphData.gActive();
+    if (!gActive) return [];
+
+    const matches = [];
+    store.renderPayload.nodes.forEach((id) => {
+        const label = (store.renderPayload.customLabels?.[id] || (gActive.hasNode(id) ? gActive.getNodeAttribute(id, 'name') : '') || '').toLowerCase();
+        if (label.includes(q)) {
+            matches.push(id);
+        }
+    });
+    return matches;
+});
+
+const searchMatchSet = computed(() => {
+    if (!searchQuery.value.trim()) return null;
+    return new Set(searchMatchList.value);
+});
+
 let panZoomInstance = null;
 let visNetworkInstance = null;
 let visBaseNodes = [];
 let visBaseEdges = [];
 let threeGraphInstance = null;
+let threeLayerPlanesGroup = null;
 
 mermaid.initialize({
     startOnLoad: false,
@@ -88,6 +115,38 @@ const handleMermaidBackgroundClick = (event) => {
 };
 
 window.handleNodeClick = showNodeInfo;
+
+// --- IN-CANVAS SEARCH FOCUS ---
+const clearSearch = () => {
+    searchQuery.value = '';
+    searchFocusIdx.value = 0;
+};
+
+const focusNextSearchMatch = () => {
+    if (searchMatchList.value.length === 0) return;
+    const targetId = searchMatchList.value[searchFocusIdx.value % searchMatchList.value.length];
+    searchFocusIdx.value = (searchFocusIdx.value + 1) % searchMatchList.value.length;
+
+    if (store.activeEngine === 'visjs' && visNetworkInstance) {
+        visNetworkInstance.focus(targetId, {
+            scale: 1.25,
+            animation: { duration: 450, easingFunction: 'easeInOutQuad' }
+        });
+        visNetworkInstance.selectNodes([targetId]);
+    } else if (store.activeEngine === '3d' && threeGraphInstance) {
+        const nodes = threeGraphInstance.graphData().nodes || [];
+        const node = nodes.find((n) => n.id === targetId);
+        if (node && typeof node.x === 'number') {
+            const distance = 160;
+            const distRatio = 1 + distance / Math.hypot(node.x || 1, node.y || 1, node.z || 1);
+            threeGraphInstance.cameraPosition(
+                { x: node.x * distRatio, y: node.y + 40, z: node.z * distRatio },
+                node,
+                800
+            );
+        }
+    }
+};
 
 // --- STEPPER CONTROLS ---
 const stopAutoPlay = () => {
@@ -148,7 +207,22 @@ const toggleAutoPlay = () => {
 };
 
 // --- CLEANUP HELPERS ---
+const clear3DLayerPlanes = () => {
+    if (threeLayerPlanesGroup && threeGraphInstance) {
+        threeGraphInstance.scene().remove(threeLayerPlanesGroup);
+        threeLayerPlanesGroup.traverse((obj) => {
+            if (obj.geometry) obj.geometry.dispose();
+            if (obj.material) {
+                if (obj.material.map) obj.material.map.dispose();
+                obj.material.dispose();
+            }
+        });
+    }
+    threeLayerPlanesGroup = null;
+};
+
 const destroyRenderers = () => {
+    clear3DLayerPlanes();
     if (panZoomInstance) {
         panZoomInstance.destroy();
         panZoomInstance = null;
@@ -258,97 +332,240 @@ const createTextSprite = (node) => {
     return sprite;
 };
 
-// --- APPLY STEP STATE TO VIS.JS & 3D IN-PLACE ---
-const applyVisStepState = (stepState) => {
+// --- 3D ISO LAYER PLANES BUILDER ---
+const createLayerLabelSprite = (text, colorHex) => {
+    const canvas = document.createElement('canvas');
+    const ctx = canvas.getContext('2d');
+    const fontStr = 'bold 26px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
+    ctx.font = fontStr;
+    const textW = ctx.measureText(text).width;
+    canvas.width = Math.ceil(textW + 32);
+    canvas.height = 46;
+
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.9)';
+    ctx.strokeStyle = colorHex;
+    ctx.lineWidth = 3;
+    ctx.fillRect(2, 2, canvas.width - 4, canvas.height - 4);
+    ctx.strokeRect(2, 2, canvas.width - 4, canvas.height - 4);
+
+    ctx.font = fontStr;
+    ctx.fillStyle = colorHex;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(text, canvas.width / 2, canvas.height / 2);
+
+    const texture = new THREE.CanvasTexture(canvas);
+    texture.minFilter = THREE.LinearFilter;
+    const mat = new THREE.SpriteMaterial({ map: texture, transparent: true, depthWrite: false });
+    const sprite = new THREE.Sprite(mat);
+    sprite.scale.set(canvas.width * 0.28, canvas.height * 0.28, 1);
+    return sprite;
+};
+
+const add3DLayerPlanes = (nodes) => {
+    if (!threeGraphInstance || !is3DLayered.value) return;
+    clear3DLayerPlanes();
+
+    const activeGroups = new Set();
+    nodes.forEach((n) => {
+        if (n.isProc && n.group && groupLayerY[n.group] !== undefined) {
+            activeGroups.add(n.group);
+        }
+    });
+
+    if (activeGroups.size === 0) return;
+
+    const groupObj = new THREE.Group();
+    const planeSize = 520;
+    const half = planeSize / 2;
+
+    activeGroups.forEach((groupName) => {
+        const y = groupLayerY[groupName];
+        const colorHex = groupColors[groupName] || '#546e7a';
+        const threeColor = new THREE.Color(colorHex);
+
+        // Translucent horizontal slice
+        const planeGeo = new THREE.PlaneGeometry(planeSize, planeSize);
+        const planeMat = new THREE.MeshBasicMaterial({
+            color: threeColor,
+            transparent: true,
+            opacity: 0.08,
+            side: THREE.DoubleSide,
+            depthWrite: false
+        });
+        const planeMesh = new THREE.Mesh(planeGeo, planeMat);
+        planeMesh.rotation.x = -Math.PI / 2;
+        planeMesh.position.y = y;
+        groupObj.add(planeMesh);
+
+        // Crisp border perimeter around the plane
+        const borderPoints = [
+            new THREE.Vector3(-half, y, -half),
+            new THREE.Vector3(half, y, -half),
+            new THREE.Vector3(half, y, half),
+            new THREE.Vector3(-half, y, half)
+        ];
+        const borderGeo = new THREE.BufferGeometry().setFromPoints(borderPoints);
+        const borderMat = new THREE.LineBasicMaterial({
+            color: threeColor,
+            transparent: true,
+            opacity: 0.4
+        });
+        const borderLoop = new THREE.LineLoop(borderGeo, borderMat);
+        groupObj.add(borderLoop);
+
+        // Layer title tag at the front-left corner
+        const labelSprite = createLayerLabelSprite(groupName, colorHex);
+        labelSprite.position.set(-half + 70, y + 10, half - 22);
+        groupObj.add(labelSprite);
+    });
+
+    threeLayerPlanesGroup = groupObj;
+    threeGraphInstance.scene().add(groupObj);
+};
+
+// --- APPLY STEP / SEARCH VISUAL STATE TO VIS.JS & 3D IN-PLACE ---
+const applyVisVisualState = () => {
     if (!visNetworkInstance) return;
     const nodesDS = visNetworkInstance.body.data.nodes;
     const edgesDS = visNetworkInstance.body.data.edges;
+    const stepState = currentStepState.value;
+    const matches = searchMatchSet.value;
 
     const updatedNodes = visBaseNodes.map((n) => {
-        if (!stepState) return n;
-        if (stepState.activeNodes.has(n.id)) {
+        if (matches !== null) {
+            if (matches.has(n.id)) {
+                return {
+                    ...n,
+                    color: { background: '#FFF3CD', border: '#E65100' },
+                    borderWidth: 4,
+                    opacity: 1
+                };
+            }
             return {
                 ...n,
-                color: { background: '#E3F2FD', border: '#1565C0' },
-                borderWidth: 3.5,
-                opacity: 1
+                color: { background: '#f5f5f5', border: '#dcdcdc' },
+                font: { ...n.font, color: '#a0a0a0' },
+                opacity: 0.25
             };
         }
-        if (stepState.visitedNodes.has(n.id)) {
-            return { ...n, opacity: 1 };
+        if (stepState) {
+            if (stepState.activeNodes.has(n.id)) {
+                return {
+                    ...n,
+                    color: { background: '#E3F2FD', border: '#1565C0' },
+                    borderWidth: 3.5,
+                    opacity: 1
+                };
+            }
+            if (stepState.visitedNodes.has(n.id)) {
+                return { ...n, opacity: 1 };
+            }
+            return {
+                ...n,
+                color: { background: '#f3f4f6', border: '#d1d5db' },
+                font: { ...n.font, color: '#9ca3af' },
+                opacity: 0.3
+            };
         }
-        return {
-            ...n,
-            color: { background: '#f3f4f6', border: '#d1d5db' },
-            font: { ...n.font, color: '#9ca3af' },
-            opacity: 0.3
-        };
+        return n;
     });
 
     const updatedEdges = visBaseEdges.map((e) => {
-        if (!stepState) return e;
-        const key = `${e.from}___${e.to}`;
-        if (stepState.activeEdges.has(key)) {
+        if (matches !== null) {
+            const touched = matches.has(e.from) || matches.has(e.to);
+            return touched
+                ? { ...e, width: 2 }
+                : { ...e, width: 1, color: { color: 'rgba(180,180,180,0.22)' }, font: { ...e.font, color: 'rgba(160,160,160,0.3)' } };
+        }
+        if (stepState) {
+            const key = `${e.from}___${e.to}`;
+            if (stepState.activeEdges.has(key)) {
+                return {
+                    ...e,
+                    width: 3.5,
+                    color: { color: '#1565C0', highlight: '#0D47A1' },
+                    font: { ...e.font, color: '#1565C0' }
+                };
+            }
+            if (stepState.visitedEdges.has(key)) {
+                return { ...e, width: 1.5 };
+            }
             return {
                 ...e,
-                width: 3.5,
-                color: { color: '#1565C0', highlight: '#0D47A1' },
-                font: { ...e.font, color: '#1565C0' }
+                width: 1,
+                color: { color: 'rgba(180,180,180,0.28)' },
+                font: { ...e.font, color: 'rgba(160,160,160,0.35)' }
             };
         }
-        if (stepState.visitedEdges.has(key)) {
-            return { ...e, width: 1.5 };
-        }
-        return {
-            ...e,
-            width: 1,
-            color: { color: 'rgba(180,180,180,0.28)' },
-            font: { ...e.font, color: 'rgba(160,160,160,0.35)' }
-        };
+        return e;
     });
 
     nodesDS.update(updatedNodes);
     edgesDS.update(updatedEdges);
 };
 
-const apply3DStepState = (stepState) => {
+const apply3DVisualState = () => {
     if (!threeGraphInstance) return;
+    const stepState = currentStepState.value;
+    const matches = searchMatchSet.value;
 
     threeGraphInstance
         .nodeColor((node) => {
-            if (!stepState) return node.color;
-            if (stepState.activeNodes.has(node.id)) return '#1565C0';
-            if (stepState.visitedNodes.has(node.id)) return node.color;
-            return '#d8dde3';
+            if (matches !== null) {
+                return matches.has(node.id) ? '#E65100' : '#dde1e6';
+            }
+            if (stepState) {
+                if (stepState.activeNodes.has(node.id)) return '#1565C0';
+                if (stepState.visitedNodes.has(node.id)) return node.color;
+                return '#d8dde3';
+            }
+            return node.color;
+        })
+        .nodeVal((node) => {
+            if (matches !== null && matches.has(node.id)) return Math.max(node.val * 1.9, 14);
+            return node.val;
         })
         .linkColor((link) => {
             const u = typeof link.source === 'object' ? link.source.id : link.source;
             const v = typeof link.target === 'object' ? link.target.id : link.target;
             const key = `${u}___${v}`;
-            if (!stepState) return link.isSystemic ? '#b0b8c1' : '#7a869a';
-            if (stepState.activeEdges.has(key)) return '#1565C0';
-            if (stepState.visitedEdges.has(key)) return '#7a869a';
-            return '#e5e7eb';
+            if (matches !== null) {
+                return (matches.has(u) || matches.has(v)) ? '#E65100' : '#e5e7eb';
+            }
+            if (stepState) {
+                if (stepState.activeEdges.has(key)) return '#1565C0';
+                if (stepState.visitedEdges.has(key)) return '#7a869a';
+                return '#e5e7eb';
+            }
+            return link.isSystemic ? '#b0b8c1' : '#7a869a';
         })
         .linkWidth((link) => {
             const u = typeof link.source === 'object' ? link.source.id : link.source;
             const v = typeof link.target === 'object' ? link.target.id : link.target;
             const key = `${u}___${v}`;
-            if (!stepState) return link.isSystemic ? 0.8 : 1.4;
-            if (stepState.activeEdges.has(key)) return 3;
-            if (stepState.visitedEdges.has(key)) return 1.2;
-            return 0.4;
+            if (matches !== null) {
+                return (matches.has(u) || matches.has(v)) ? 2.4 : 0.4;
+            }
+            if (stepState) {
+                if (stepState.activeEdges.has(key)) return 3;
+                if (stepState.visitedEdges.has(key)) return 1.2;
+                return 0.4;
+            }
+            return link.isSystemic ? 0.8 : 1.4;
         })
         .linkDirectionalParticles((link) => {
             const u = typeof link.source === 'object' ? link.source.id : link.source;
             const v = typeof link.target === 'object' ? link.target.id : link.target;
             const key = `${u}___${v}`;
-            if (!stepState) return link.isSystemic ? 1 : 2;
-            return stepState.activeEdges.has(key) ? 4 : 0;
+            if (matches !== null) return (matches.has(u) || matches.has(v)) ? 2 : 0;
+            if (stepState) return stepState.activeEdges.has(key) ? 4 : 0;
+            return link.isSystemic ? 1 : 2;
         })
         .linkDirectionalParticleColor((link) => {
-            if (!stepState) return link.isSystemic ? '#9aa5b1' : '#4CAF50';
-            return '#1565C0';
+            if (matches !== null) return '#E65100';
+            if (stepState) return '#1565C0';
+            return link.isSystemic ? '#9aa5b1' : '#4CAF50';
         });
 };
 
@@ -372,7 +589,8 @@ const renderMermaid = async (payload, preserveView = false) => {
         payload.renderSubgraphs,
         payload.customLabels,
         payload.highlightedNodes,
-        currentStepState.value
+        currentStepState.value,
+        searchMatchSet.value
     );
     if (!mermaidCode) return;
 
@@ -516,8 +734,8 @@ const renderVisJs = (payload) => {
         else selectedNodeInfo.value = null;
     });
 
-    if (currentStepState.value) {
-        applyVisStepState(currentStepState.value);
+    if (currentStepState.value || searchMatchSet.value !== null) {
+        applyVisVisualState();
     }
 };
 
@@ -545,7 +763,7 @@ const render3D = (payload) => {
         };
 
         if (is3DLayered.value && isProc) {
-            nodeObj.fy = groupLayerY[group] ?? -150;
+            nodeObj.fy = groupLayerY[group] ?? -170;
         }
 
         return nodeObj;
@@ -603,7 +821,11 @@ const render3D = (payload) => {
         .onEngineStop(() => {
             if (!hasFitted && threeGraphInstance) {
                 hasFitted = true;
-                threeGraphInstance.zoomToFit(600, 60);
+                if (is3DLayered.value) {
+                    threeGraphInstance.cameraPosition({ x: 380, y: 220, z: 480 }, { x: 0, y: 0, z: 0 }, 700);
+                } else {
+                    threeGraphInstance.zoomToFit(600, 60);
+                }
             }
         });
 
@@ -612,8 +834,12 @@ const render3D = (payload) => {
     const chargeForce = threeGraphInstance.d3Force('charge');
     if (chargeForce) chargeForce.strength(-360);
 
-    if (currentStepState.value) {
-        apply3DStepState(currentStepState.value);
+    if (is3DLayered.value) {
+        add3DLayerPlanes(nodes);
+    }
+
+    if (currentStepState.value || searchMatchSet.value !== null) {
+        apply3DVisualState();
     }
 };
 
@@ -626,7 +852,11 @@ const fitView = () => {
     } else if (store.activeEngine === 'visjs' && visNetworkInstance) {
         visNetworkInstance.fit({ animation: { duration: 400, easingFunction: 'easeInOutQuad' } });
     } else if (store.activeEngine === '3d' && threeGraphInstance) {
-        threeGraphInstance.zoomToFit(500, 60);
+        if (is3DLayered.value) {
+            threeGraphInstance.cameraPosition({ x: 380, y: 220, z: 480 }, { x: 0, y: 0, z: 0 }, 600);
+        } else {
+            threeGraphInstance.zoomToFit(500, 60);
+        }
     }
 };
 
@@ -641,6 +871,8 @@ watch(() => [store.renderPayload, store.activeEngine], async ([newPayload, engin
     stopAutoPlay();
     stepperActive.value = false;
     flowSteps.value = [];
+    searchQuery.value = '';
+    searchFocusIdx.value = 0;
     showSummaryDrawer.value = Boolean(newPayload?.analysisSummary);
 
     if (engine === 'n2' || engine === 'insights') {
@@ -659,15 +891,16 @@ watch(() => [store.renderPayload, store.activeEngine], async ([newPayload, engin
     else if (engine === '3d') render3D(newPayload);
 }, { deep: true });
 
-// React to step changes without resetting layout
-watch([stepperActive, currentStepIdx], async () => {
+// React to step or search changes without resetting layout
+watch([stepperActive, currentStepIdx, searchQuery], async () => {
+    searchFocusIdx.value = 0;
     if (store.renderPayload.nodes.size === 0) return;
     if (store.activeEngine === 'mermaid') {
         await renderMermaid(store.renderPayload, true);
     } else if (store.activeEngine === 'visjs') {
-        applyVisStepState(currentStepState.value);
+        applyVisVisualState();
     } else if (store.activeEngine === '3d') {
-        apply3DStepState(currentStepState.value);
+        apply3DVisualState();
     }
 });
 
@@ -809,7 +1042,7 @@ onUnmounted(() => {
       <div v-if="store.activeEngine === 'visjs'" ref="visDiv" class="render-div"></div>
       <div v-if="store.activeEngine === '3d'" ref="threeDiv" class="render-div"></div>
 
-      <!-- Top-Left Canvas Controls -->
+      <!-- Top-Left Canvas Controls + In-Canvas Search -->
       <div class="canvas-toolbar">
           <button class="toolbar-btn" @click="fitView" title="Fit diagram to viewport">🎯 Fit View</button>
           <button
@@ -828,12 +1061,44 @@ onUnmounted(() => {
           >
             📊 Report
           </button>
+
+          <!-- In-Canvas Text Search -->
+          <div class="toolbar-search-box">
+              <span class="search-icon">🔍</span>
+              <input
+                type="text"
+                v-model="searchQuery"
+                class="toolbar-search-input"
+                placeholder="Highlight node..."
+                @keydown.enter="focusNextSearchMatch"
+              />
+              <span v-if="searchQuery.trim()" :class="['search-badge', { zero: searchMatchList.length === 0 }]">
+                  {{ searchMatchList.length }}
+              </span>
+              <button
+                v-if="searchMatchList.length > 0 && store.activeEngine !== 'mermaid'"
+                class="search-action-btn"
+                @click="focusNextSearchMatch"
+                title="Focus next matching node (Enter)"
+              >
+                ↳
+              </button>
+              <button
+                v-if="searchQuery"
+                class="search-clear-btn"
+                @click="clearSearch"
+                title="Clear search"
+              >
+                ×
+              </button>
+          </div>
+
           <template v-if="store.activeEngine === '3d'">
               <label class="toolbar-toggle">
                   <input type="checkbox" v-model="show3DLabels" />
                   Labels
               </label>
-              <label class="toolbar-toggle" title="Separate ISO 15288 process groups into vertical layers">
+              <label class="toolbar-toggle" title="Separate ISO 15288 process groups onto visual horizontal planes">
                   <input type="checkbox" v-model="is3DLayered" />
                   ISO Layers
               </label>
@@ -918,8 +1183,9 @@ onUnmounted(() => {
 /* Floating Canvas Toolbar */
 .canvas-toolbar {
     position: absolute; top: 18px; left: 20px; z-index: 100;
-    display: flex; flex-wrap: wrap; align-items: center; gap: 10px;
-    background: rgba(255, 255, 255, 0.92);
+    display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
+    max-width: calc(100% - 40px);
+    background: rgba(255, 255, 255, 0.94);
     border: 1px solid #d0d7de; border-radius: 8px;
     padding: 6px 10px; box-shadow: 0 3px 8px rgba(0, 0, 0, 0.08);
     backdrop-filter: blur(4px);
@@ -938,6 +1204,34 @@ onUnmounted(() => {
     font-size: 12px; font-weight: 500; color: #333;
     cursor: pointer; user-select: none; padding-left: 4px;
 }
+
+/* In-Canvas Search Box */
+.toolbar-search-box {
+    display: flex; align-items: center; gap: 4px;
+    background: #ffffff; border: 1px solid #cbd5e1; border-radius: 6px;
+    padding: 2px 6px; transition: border-color 0.15s;
+}
+.toolbar-search-box:focus-within {
+    border-color: #E65100;
+    box-shadow: 0 0 0 2px rgba(230, 81, 0, 0.15);
+}
+.search-icon { font-size: 11px; opacity: 0.7; }
+.toolbar-search-input {
+    border: none; outline: none; font-size: 12px; width: 135px;
+    padding: 3px 2px; color: #222; background: transparent;
+}
+.search-badge {
+    font-size: 10px; font-weight: 700; padding: 1px 6px; border-radius: 10px;
+    background: #FFF3CD; color: #BF360C; border: 1px solid #FFCC80;
+}
+.search-badge.zero {
+    background: #f1f5f9; color: #94a3b8; border-color: #e2e8f0;
+}
+.search-action-btn, .search-clear-btn {
+    border: none; background: none; cursor: pointer;
+    font-size: 13px; color: #64748b; padding: 0 3px; line-height: 1;
+}
+.search-action-btn:hover, .search-clear-btn:hover { color: #111; }
 
 /* Stepper Bar */
 .stepper-bar {

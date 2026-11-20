@@ -43,7 +43,10 @@ export const iso15288Mapping = {
   'Supply': 'Agreement',
 
   // Tailoring (Annex A)
-  'Tailoring': 'Tailoring'
+  'Tailoring': 'Tailoring',
+
+  // External boundary (inputs/outputs beyond the ISO 15288 process set)
+  'External': 'External'
 };
 
 export const isoProcessOrder = Object.keys(iso15288Mapping);
@@ -54,6 +57,7 @@ export const groupOrder = [
   'Organizational Project-Enabling',
   'Agreement',
   'Tailoring',
+  'External',
   'Others',
   'Business Objects'
 ];
@@ -64,6 +68,7 @@ export const groupShortLabels = {
   'Organizational Project-Enabling': 'Org',
   'Agreement': 'Agmt',
   'Tailoring': 'Tailor',
+  'External': 'External',
   'Others': 'Other'
 };
 
@@ -73,17 +78,19 @@ export const groupColors = {
   'Organizational Project-Enabling': '#6a1b9a',
   'Agreement': '#c62828',
   'Tailoring': '#ef6c00',
+  'External': '#37474f',
   'Others': '#546e7a'
 };
 
 // Vertical Y-axis coordinates for the layered 3D layout
 export const groupLayerY = {
-  'Agreement': 150,
-  'Organizational Project-Enabling': 75,
-  'Technical Management': 0,
-  'Technical': -85,
-  'Tailoring': -150,
-  'Others': -150
+  'External': 210,
+  'Agreement': 135,
+  'Organizational Project-Enabling': 60,
+  'Technical Management': -15,
+  'Technical': -95,
+  'Tailoring': -170,
+  'Others': -170
 };
 
 export function getProcessGroup(name) {

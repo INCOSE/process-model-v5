@@ -12,8 +12,27 @@ import {
 // Scope: 'full' (entire ISO 15288 model) or 'diagram' (processes from current scenario)
 const scope = ref(store.renderPayload.nodes.size > 0 ? 'diagram' : 'full');
 
-const availableGroups = ['Technical', 'Technical Management', 'Organizational Project-Enabling', 'Agreement', 'Tailoring', 'Others'];
-const activeGroups = ref(new Set(['Technical', 'Technical Management', 'Organizational Project-Enabling', 'Agreement', 'Tailoring']));
+const availableGroups = [
+  'Technical',
+  'Technical Management',
+  'Organizational Project-Enabling',
+  'Agreement',
+  'Tailoring',
+  'External',
+  'Others'
+];
+
+// External is enabled by default so inbound/outbound boundary flows are immediately visible
+const activeGroups = ref(
+  new Set([
+    'Technical',
+    'Technical Management',
+    'Organizational Project-Enabling',
+    'Agreement',
+    'Tailoring',
+    'External'
+  ])
+);
 
 const hoveredCell = ref({ row: -1, col: -1 });
 const selectedCell = ref(null);
@@ -49,7 +68,6 @@ const matrixProcesses = computed(() => {
       const type = gActive.getNodeAttribute(id, 'type') || '';
       return type.includes('BusinessFunction');
     });
-    // Fallback to all processes if diagram only has non-function nodes
     if (candidateIds.length === 0) {
       candidateIds = Object.keys(store.processes);
     }
@@ -84,7 +102,7 @@ const matrixProcesses = computed(() => {
 
 /**
  * Computes exchanged Business Objects between every pair (producer -> consumer).
- * Respects store.settings.useHierarchy (2 steps direct, up to 4 steps with object hierarchy).
+ * Preserves Situational / Controls / Enables classifications on each artefact.
  */
 const matrixData = computed(() => {
   const procs = matrixProcesses.value;
@@ -94,7 +112,7 @@ const matrixData = computed(() => {
   const procIdSet = new Set(procs.map((p) => p.id));
   const useHierarchy = store.settings.useHierarchy;
 
-  // Map: producerId -> Map(consumerId -> Map(objectId -> { id, name, doc, systemic }))
+  // Map: producerId -> Map(consumerId -> Map(objectId -> artefactRecord))
   const exchangeMap = new Map();
   procs.forEach((p) => exchangeMap.set(p.id, new Map()));
 
@@ -103,7 +121,12 @@ const matrixData = computed(() => {
     return t.includes('BusinessFunction') || t.includes('BusinessProcess');
   };
 
-  // For each producer process, find all reachable consumer processes through Business Objects
+  const getEdgeTag = (attr) => {
+    const sub = attr?.subclass || attr?.name || '';
+    if (sub === 'Situational' || sub === 'Controls' || sub === 'Enables') return sub;
+    return '';
+  };
+
   procs.forEach((producer) => {
     const prodMap = exchangeMap.get(producer.id);
 
@@ -112,10 +135,9 @@ const matrixData = computed(() => {
       if (attr1.access === 'hierarchy_reverse') return;
       if (isProcessNode(obj1)) return;
 
-      const isSys1 = ['Controls', 'Enables', 'Situational'].includes(attr1.subclass || '');
+      const tag1 = getEdgeTag(attr1);
 
-      // Collect reachable objects from obj1 if hierarchy is enabled (e.g., Specific Report -> Project Reports)
-      const objectQueue = [{ id: obj1, depth: 0, systemic: isSys1, via: obj1 }];
+      const objectQueue = [{ id: obj1, depth: 0, tags: tag1 ? [tag1] : [] }];
       const visitedObjs = new Set([obj1]);
 
       while (objectQueue.length > 0) {
@@ -123,25 +145,35 @@ const matrixData = computed(() => {
 
         gActive.forEachOutEdge(curr.id, (edge2, attr2, u2, target) => {
           if (attr2.access === 'hierarchy_reverse') return;
-          const isSys2 = curr.systemic || ['Controls', 'Enables', 'Situational'].includes(attr2.subclass || '');
+          const tag2 = getEdgeTag(attr2);
+          const mergedTags = new Set(curr.tags);
+          if (tag2) mergedTags.add(tag2);
 
           if (procIdSet.has(target) && target !== producer.id) {
             if (!prodMap.has(target)) prodMap.set(target, new Map());
             const objMap = prodMap.get(target);
-            if (!objMap.has(obj1)) {
+            const existing = objMap.get(obj1);
+
+            if (!existing) {
               objMap.set(obj1, {
                 id: obj1,
                 name: gActive.getNodeAttribute(obj1, 'name') || 'Unknown',
                 doc: gActive.getNodeAttribute(obj1, 'doc') || 'Description is missing in the model.',
-                systemic: isSys2,
+                isSituational: mergedTags.has('Situational'),
+                isControls: mergedTags.has('Controls'),
+                isEnables: mergedTags.has('Enables'),
                 viaHierarchy: curr.id !== obj1 ? (gActive.getNodeAttribute(curr.id, 'name') || '') : ''
               });
+            } else {
+              if (mergedTags.has('Situational')) existing.isSituational = true;
+              if (mergedTags.has('Controls')) existing.isControls = true;
+              if (mergedTags.has('Enables')) existing.isEnables = true;
             }
           } else if (useHierarchy && curr.depth < 2 && !isProcessNode(target) && !visitedObjs.has(target)) {
             const rType = attr2.type || '';
             if (['Specialization', 'Aggregation', 'Composition'].some((x) => rType.includes(x))) {
               visitedObjs.add(target);
-              objectQueue.push({ id: target, depth: curr.depth + 1, systemic: isSys2, via: target });
+              objectQueue.push({ id: target, depth: curr.depth + 1, tags: Array.from(mergedTags) });
             }
           }
         });
@@ -157,12 +189,13 @@ const matrixData = computed(() => {
     const prodMap = exchangeMap.get(rowProc.id);
     return procs.map((colProc, cIdx) => {
       if (rIdx === cIdx) {
-        return { isDiagonal: true, items: [], count: 0, isFeedback: false };
+        return { isDiagonal: true, items: [], count: 0, isFeedback: false, hasSituational: false };
       }
       const objMap = prodMap?.get(colProc.id);
       const items = objMap ? Array.from(objMap.values()).sort((a, b) => a.name.localeCompare(b.name)) : [];
       const count = items.length;
       const isFeedback = rIdx > cIdx;
+      const hasSituational = items.some((i) => i.isSituational);
       if (count > 0) {
         totalLinks++;
         if (isFeedback) feedbackLinks++;
@@ -173,6 +206,7 @@ const matrixData = computed(() => {
         items,
         count,
         isFeedback,
+        hasSituational,
         producer: rowProc,
         consumer: colProc
       };
@@ -228,7 +262,17 @@ const exportCsv = () => {
     const values = rowCells.map((cell) => {
       if (cell.isDiagonal) return '"-"';
       if (cell.count === 0) return '""';
-      return escapeCsv(cell.items.map((i) => i.name).join('; '));
+      return escapeCsv(
+        cell.items
+          .map((i) => {
+            const tags = [];
+            if (i.isSituational) tags.push('Situational');
+            if (i.isControls) tags.push('Controls');
+            if (i.isEnables) tags.push('Enables');
+            return tags.length ? `${i.name} [${tags.join(', ')}]` : i.name;
+          })
+          .join('; ')
+      );
     });
     return [rowTitle, ...values].join(',');
   });
@@ -361,12 +405,14 @@ const exportCsv = () => {
                   cell.isDiagonal
                     ? rowProc.name
                     : cell.count > 0
-                      ? `${rowProc.name} → ${matrixProcesses[cIdx].name}: ${cell.count} artefact(s)`
+                      ? `${rowProc.name} → ${matrixProcesses[cIdx].name}: ${cell.count} artefact(s)${cell.hasSituational ? ' (includes Situational)' : ''}`
                       : ''
                 "
               >
                 <span v-if="cell.isDiagonal" class="diag-mark">{{ rIdx + 1 }}</span>
-                <span v-else-if="cell.count > 0" class="cell-count">{{ cell.count }}</span>
+                <span v-else-if="cell.count > 0" class="cell-count">
+                  {{ cell.count }}<sup v-if="cell.hasSituational" class="sit-mark" title="Includes Situational artefact">S</sup>
+                </span>
               </td>
             </tr>
           </tbody>
@@ -400,7 +446,11 @@ const exportCsv = () => {
             <li v-for="item in selectedCell.items" :key="item.id" class="artefact-card">
               <div class="artefact-header">
                 <span class="artefact-name">{{ item.name }}</span>
-                <span v-if="item.systemic" class="sys-tag">Systemic</span>
+                <div class="artefact-tags">
+                  <span v-if="item.isSituational" class="sit-tag">Situational</span>
+                  <span v-if="item.isControls" class="sys-tag">Controls</span>
+                  <span v-if="item.isEnables" class="sys-tag">Enables</span>
+                </div>
               </div>
               <div v-if="item.viaHierarchy" class="hierarchy-note">
                 via hierarchy: <em>{{ item.viaHierarchy }}</em>
@@ -415,10 +465,13 @@ const exportCsv = () => {
     <!-- Bottom Legend -->
     <div class="n2-legend">
       <div class="n2-legend-item">
-        <span class="swatch swatch-forward"></span> Above diagonal: Feedforward (lifecycle progression)
+        <span class="swatch swatch-forward"></span> Above diagonal: Feedforward
       </div>
       <div class="n2-legend-item">
-        <span class="swatch swatch-feedback"></span> Below diagonal: Feedback / iteration loop
+        <span class="swatch swatch-feedback"></span> Below diagonal: Feedback / iteration
+      </div>
+      <div class="n2-legend-item">
+        <span class="sit-tag">S</span> Includes Situational artefact
       </div>
       <div class="n2-legend-item">
         Click any numbered cell to inspect exchanged artefacts.
@@ -675,6 +728,11 @@ tr.row-highlighted .row-header {
   outline: 2px solid #1565c0;
   outline-offset: -2px;
 }
+.sit-mark {
+  font-size: 8px;
+  margin-left: 1px;
+  opacity: 0.9;
+}
 
 /* Inspector Drawer */
 .n2-inspector {
@@ -769,7 +827,7 @@ tr.row-highlighted .row-header {
 .artefact-header {
   display: flex;
   justify-content: space-between;
-  align-items: center;
+  align-items: flex-start;
   gap: 6px;
   margin-bottom: 4px;
 }
@@ -777,6 +835,21 @@ tr.row-highlighted .row-header {
   font-weight: 600;
   font-size: 13px;
   color: #1e293b;
+}
+.artefact-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  flex-shrink: 0;
+}
+.sit-tag {
+  font-size: 10px;
+  font-weight: 700;
+  padding: 2px 6px;
+  border-radius: 8px;
+  background: #f3e5f5;
+  color: #6a1b9a;
+  border: 1px solid #ce93d8;
 }
 .sys-tag {
   font-size: 10px;

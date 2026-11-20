@@ -8,16 +8,15 @@ import { enforceBorderObjectRelations } from '../renderers/mermaidGenerator.js';
 export const Case1 = {
     id: 'case_1',
     name: 'Case 1: Interface exchange between selected processes',
-    description: 'Select 2 to 5 processes. The script will find objects they exchange data through.',
-    
+    description: 'Select 2 or more processes. The script will find objects they exchange data through.',
+
     // UI schema to dynamically generate inputs in Sidebar.vue
     inputs: [
         {
             key: 'selectedProcesses',
             type: 'multiselect',
-            label: 'Select processes (2 to 5):',
+            label: 'Select processes (2 or more):',
             min: 2,
-            max: 5,
             optionsSource: 'processes' // Tells the UI to map this from store.processes
         }
     ],
@@ -55,8 +54,7 @@ export const Case1 = {
         const cutoff = ctx.settings.useHierarchy ? 4 : 2;
 
         /**
-         * Custom DFS to find all simple paths up to a specific cutoff, ignoring direction.
-         * Simulates nx.all_simple_paths on an undirected graph.
+         * Custom DFS to find all simple paths up to a specific cutoff.
          */
         const findDirectedExchangePaths = (source, target, maxDepth) => {
             const paths = [];
@@ -68,13 +66,13 @@ export const Case1 = {
                     paths.push([...currentPath]);
                     return;
                 }
-                
+
                 visited.add(currentNode);
-                
+
                 gActive.forEachOutEdge(currentNode, (edge, attr, u, neighbor) => {
                     if (visited.has(neighbor)) return;
 
-                    // Промежуточными узлами между p1 и p2 могут быть только бизнес-объекты (не процессы)
+                    // Intermediate nodes between p1 and p2 must be business objects (not processes)
                     if (neighbor !== target) {
                         const nType = gActive.getNodeAttribute(neighbor, 'type') || '';
                         if (nType.includes('BusinessProcess') || nType.includes('BusinessFunction')) {
@@ -86,10 +84,10 @@ export const Case1 = {
                     dfs(neighbor, currentPath);
                     currentPath.pop();
                 });
-                
+
                 visited.delete(currentNode);
             };
-            
+
             dfs(source, [source]);
             return paths;
         };
@@ -109,7 +107,7 @@ export const Case1 = {
                     ...findDirectedExchangePaths(p1, p2, cutoff),
                     ...findDirectedExchangePaths(p2, p1, cutoff)
                 ];
-                
+
                 paths.forEach(path => {
                     if (path.length > 2) {
                         // Intermediate nodes must not be BusinessProcess or BusinessFunction
@@ -125,7 +123,7 @@ export const Case1 = {
                                 const u = path[k];
                                 const v = path[k + 1];
                                 safeAddEdge(u, v);
-                                safeAddEdge(v, u); // Try both directions as traversal was undirected
+                                safeAddEdge(v, u);
                             }
                         }
                     }
@@ -135,11 +133,11 @@ export const Case1 = {
 
         // Output validation
         if (nodesToDraw.size === selectedIds.length && edgesToDraw.length === 0) {
-            return { 
-                nodes: nodesToDraw, 
-                edges: edgesToDraw, 
-                warning: true, 
-                message: "No links or shared exchange objects found between these processes." 
+            return {
+                nodes: nodesToDraw,
+                edges: edgesToDraw,
+                warning: true,
+                message: "No links or shared exchange objects found between these processes."
             };
         }
 
@@ -148,11 +146,11 @@ export const Case1 = {
             edgesToDraw = enforceBorderObjectRelations(gActive, nodesToDraw, edgesToDraw);
         }
 
-        return { 
-            nodes: nodesToDraw, 
-            edges: edgesToDraw, 
-            success: true, 
-            message: "Exchange interfaces found!" 
+        return {
+            nodes: nodesToDraw,
+            edges: edgesToDraw,
+            success: true,
+            message: "Exchange interfaces found!"
         };
     }
 };

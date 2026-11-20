@@ -31,7 +31,8 @@ export function graphToMermaidAndData(
     renderSubgraphs = false,
     customLabels = {},
     highlightedNodes = new Set(),
-    stepState = null
+    stepState = null,
+    searchMatches = null
 ) {
     if (!nodesToInclude || nodesToInclude.size === 0) {
         return { mermaidCode: "", nodesData: {} };
@@ -43,7 +44,9 @@ export function graphToMermaidAndData(
         "classDef centralProcess fill:#FFE6CC,stroke:#D79B00,stroke-width:4px,color:#000,font-weight:bold;",
         "classDef object fill:#D5E8D4,stroke:#82B366,stroke-width:2px,color:#000;",
         "classDef stepActive fill:#E3F2FD,stroke:#1565C0,stroke-width:4px,color:#0D47A1,font-weight:bold;",
-        "classDef stepDimmed fill:#F5F5F5,stroke:#DCDCDC,stroke-width:1px,color:#A0A0A0;"
+        "classDef stepDimmed fill:#F5F5F5,stroke:#DCDCDC,stroke-width:1px,color:#A0A0A0;",
+        "classDef searchMatch fill:#FFF3CD,stroke:#E65100,stroke-width:4px,color:#BF360C,font-weight:bold;",
+        "classDef searchDimmed fill:#F7F7F7,stroke:#E0E0E0,stroke-width:1px,color:#B0B0B0;"
     ];
 
     const nodesData = {};
@@ -87,11 +90,18 @@ export function graphToMermaidAndData(
         if (index > -1) standaloneNodes.splice(index, 1);
     });
 
+    const hasSearch = searchMatches !== null;
+
     const resolveNodeClass = (nodeId, defaultClass) => {
-        if (!stepState) return defaultClass;
-        if (stepState.activeNodes.has(nodeId)) return 'stepActive';
-        if (stepState.visitedNodes.has(nodeId)) return defaultClass;
-        return 'stepDimmed';
+        if (hasSearch) {
+            return searchMatches.has(nodeId) ? 'searchMatch' : 'searchDimmed';
+        }
+        if (stepState) {
+            if (stepState.activeNodes.has(nodeId)) return 'stepActive';
+            if (stepState.visitedNodes.has(nodeId)) return defaultClass;
+            return 'stepDimmed';
+        }
+        return defaultClass;
     };
 
     let linkIndex = 0;
@@ -110,7 +120,11 @@ export function graphToMermaidAndData(
 
             lines.push(`    subgraph ${mPid} ["${pName}"]`);
             lines.push(`        direction TB`);
-            if (stepState && stepState.activeNodes.has(pId)) {
+            if (hasSearch && searchMatches.has(pId)) {
+                lines.push(`        style ${mPid} fill:#FFF3CD,stroke:#E65100,stroke-width:4px,color:#BF360C,font-weight:bold;`);
+            } else if (hasSearch) {
+                lines.push(`        style ${mPid} fill:#F7F7F7,stroke:#E0E0E0,stroke-width:1px,color:#B0B0B0;`);
+            } else if (stepState && stepState.activeNodes.has(pId)) {
                 lines.push(`        style ${mPid} fill:#E3F2FD,stroke:#1565C0,stroke-width:4px,color:#0D47A1,font-weight:bold;`);
             } else if (stepState && !stepState.visitedNodes.has(pId)) {
                 lines.push(`        style ${mPid} fill:#F5F5F5,stroke:#DCDCDC,stroke-width:1px,color:#A0A0A0;`);
@@ -230,7 +244,13 @@ export function graphToMermaidAndData(
                 lines.push(`    ${uId} -->|${label}| ${vId}`);
             }
 
-            if (stepState) {
+            if (hasSearch) {
+                if (!searchMatches.has(u) && !searchMatches.has(v)) {
+                    dimmedLinkIndices.push(linkIndex.toString());
+                } else if (["Controls", "Enables", "Situational Input", "Situational Output"].includes(label)) {
+                    greyLinkIndices.push(linkIndex.toString());
+                }
+            } else if (stepState) {
                 if (stepState.activeEdges.has(edgeKey)) {
                     activeLinkIndices.push(linkIndex.toString());
                 } else if (!stepState.visitedEdges.has(edgeKey)) {
