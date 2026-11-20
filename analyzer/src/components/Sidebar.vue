@@ -2,6 +2,7 @@
 import { ref, computed, watch } from 'vue';
 import { store, graphData, applyModelXml, loadDefaultModel } from '../store/graphStore.js';
 import { CaseRegistry, casesList } from '../cases/caseRegistry.js';
+import { iso15288Mapping } from '../core/iso15288Groups.js';
 import SearchableSelect from './SearchableSelect.vue';
 
 const customFileInput = ref(null);
@@ -27,63 +28,17 @@ const resetToDefault = async () => {
   await loadDefaultModel();
 };
 
-// ISO 15288 Process Classification Mapping
-const iso15288Mapping = {
-  // Technical Processes
-  'Business or Mission Analysis': 'Technical',
-  'System Analysis': 'Technical',
-  'Stakeholder Needs and Requirements Definition': 'Technical',
-  'System Requirements Definition': 'Technical',
-  'System Architecture Definition': 'Technical',
-  'Design Definition': 'Technical',
-  'Implementation': 'Technical',
-  'Integration': 'Technical',
-  'Verification': 'Technical',
-  'Transition': 'Technical',
-  'Validation': 'Technical',
-  'Operation': 'Technical',
-  'Maintenance': 'Technical',
-  'Disposal': 'Technical',
-
-  // Technical Management Processes
-  'Project Planning': 'Technical Management',
-  'Project Assessment and Control': 'Technical Management',
-  'Decision Management': 'Technical Management',
-  'Risk Management': 'Technical Management',
-  'Configuration Management': 'Technical Management',
-  'Information Management': 'Technical Management',
-  'Measurement': 'Technical Management',
-  'Quality Assurance': 'Technical Management',
-
-  // Organizational Project-Enabling Processes
-  'Life Cycle Model Management': 'Organizational Project-Enabling',
-  'Infrastructure Management': 'Organizational Project-Enabling',
-  'Portfolio Management': 'Organizational Project-Enabling',
-  'Human Resource Management': 'Organizational Project-Enabling',
-  'Quality Management': 'Organizational Project-Enabling',
-  'Knowledge Management': 'Organizational Project-Enabling',
-
-  // Agreement Processes
-  'Acquisition': 'Agreement',
-  'Supply': 'Agreement',
-
-  // Tailoring
-  'Tailoring': 'Tailoring'
-};
-
 // Transforms raw dictionary into grouped objects array for SearchableSelect
 const getGroupedOptions = (sourceKey) => {
-  const rawData = getDynamicOptions(sourceKey); // This uses your existing function
+  const rawData = getDynamicOptions(sourceKey);
   if (!rawData) return [];
 
   return Object.entries(rawData).map(([id, name]) => {
     let group = 'Others';
     if (sourceKey === 'processes' || sourceKey === 'dynamic_inputs' || sourceKey === 'dynamic_outputs') {
-      // Find group, fallback to 'Others' for unknown processes
-      group = iso15288Mapping[name] || 'Others'; 
-      // If it's dynamically detected as an artifact in Case 7, group as Business Objects
+      group = iso15288Mapping[name] || 'Others';
       if ((sourceKey === 'dynamic_inputs' || sourceKey === 'dynamic_outputs') && !store.processes[id]) {
-          group = 'Business Objects';
+        group = 'Business Objects';
       }
     } else if (sourceKey === 'businessObjects') {
       group = 'Business Objects';
@@ -113,15 +68,14 @@ watch(() => store.caseParams.pCenter, (newVal, oldVal) => {
 const getDynamicOptions = (sourceKey) => {
   if (sourceKey === 'processes') return store.processes;
   if (sourceKey === 'businessObjects') return store.businessObjects;
-  
-  // Custom logic for Case 7 dynamic inputs/outputs
+
   if (sourceKey === 'dynamic_inputs' || sourceKey === 'dynamic_outputs') {
     const pCenter = store.caseParams.pCenter;
     if (!pCenter || !graphData.gActive) return {};
-    
+
     const gActive = graphData.gActive();
     const result = {};
-    
+
     if (sourceKey === 'dynamic_inputs') {
       gActive.forEachInNeighbor(pCenter, neighbor => {
         const type = gActive.getNodeAttribute(neighbor, 'type') || '';
@@ -144,25 +98,22 @@ const getDynamicOptions = (sourceKey) => {
 
 const runAnalysis = () => {
   if (!store.isLoaded) return;
-  
-  // 1. Execute the business logic for the active case
+
   const ctx = {
     gActive: graphData.gActive(),
     gFull: graphData.gFull,
     settings: store.settings
   };
-  
+
   const result = activeCase.value.execute(ctx, store.caseParams);
-  
-  // 2. Handle errors or warnings from the case logic
+
   if (result.error) {
     store.uiMessage = { text: result.message, type: 'error' };
     return;
   }
-  
+
   store.uiMessage = { text: result.message || 'Diagram generated!', type: result.warning ? 'warning' : 'success' };
-  
-  // 3. Save raw data to the store for the active renderer to use
+
   store.renderPayload = {
     nodes: result.nodes,
     edges: result.edges,
@@ -173,32 +124,31 @@ const runAnalysis = () => {
 };
 
 const clearDiagram = () => {
-  store.renderPayload = { nodes: new Set(), edges: [], renderSubgraphs: false, customLabels: {} };
+  store.renderPayload = { nodes: new Set(), edges: [], highlightedNodes: new Set(), renderSubgraphs: false, customLabels: {} };
   store.uiMessage = { text: 'Diagram memory cleared.', type: 'warning' };
 };
 
 const exportJson = () => {
   if (!store.renderPayload || store.renderPayload.nodes.size === 0) {
-      alert("Generate a diagram first!");
-      return;
+    alert("Generate a diagram first!");
+    return;
   }
-  
-  // Gathering data about nodes and edges
+
   const gActive = graphData.gActive();
   const exportData = {
-      nodes: Array.from(store.renderPayload.nodes).map(id => ({
-          id,
-          name: store.renderPayload.customLabels[id] || gActive.getNodeAttribute(id, 'name') || 'Unknown',
-          type: gActive.getNodeAttribute(id, 'type') || '',
-          doc: gActive.getNodeAttribute(id, 'doc') || ''
-      })),
-      edges: store.renderPayload.edges.map(e => ({
-          source: e.u,
-          target: e.v,
-          type: e.data.type || '',
-          subclass: e.data.subclass || '',
-          access: e.data.access || ''
-      }))
+    nodes: Array.from(store.renderPayload.nodes).map(id => ({
+      id,
+      name: store.renderPayload.customLabels[id] || gActive.getNodeAttribute(id, 'name') || 'Unknown',
+      type: gActive.getNodeAttribute(id, 'type') || '',
+      doc: gActive.getNodeAttribute(id, 'doc') || ''
+    })),
+    edges: store.renderPayload.edges.map(e => ({
+      source: e.u,
+      target: e.v,
+      type: e.data.type || '',
+      subclass: e.data.subclass || '',
+      access: e.data.access || ''
+    }))
   };
 
   const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(exportData, null, 4));
@@ -211,7 +161,7 @@ const exportJson = () => {
 
 <template>
   <div class="sidebar-content">
-    
+
     <!-- 0. Model Source -->
     <div class="section model-section">
       <div class="model-header">
@@ -224,20 +174,20 @@ const exportJson = () => {
         <span class="model-file-name" :title="store.modelName">📄 {{ store.modelName || 'No model loaded' }}</span>
       </div>
       <div class="model-buttons">
-        <input 
-          type="file" 
-          ref="customFileInput" 
-          accept=".xml" 
-          @change="handleCustomFileUpload" 
-          style="display: none" 
+        <input
+          type="file"
+          ref="customFileInput"
+          accept=".xml"
+          @change="handleCustomFileUpload"
+          style="display: none"
         />
         <button class="model-upload-btn" @click="customFileInput.click()" :disabled="store.isLoading">
           📂 Load Custom XML
         </button>
-        <button 
-          v-if="store.modelName !== 'ISO 15288 Converted Model.xml'" 
-          class="model-reset-btn" 
-          @click="resetToDefault" 
+        <button
+          v-if="store.modelName !== 'ISO 15288 Converted Model.xml'"
+          class="model-reset-btn"
+          @click="resetToDefault"
           :disabled="store.isLoading"
           title="Reset to default model"
         >
@@ -293,50 +243,44 @@ const exportJson = () => {
     <!-- 3. Dynamic Case Parameters -->
     <div class="section" v-if="activeCase">
       <label class="section-title">Case Parameters:</label>
-      
-      <!-- Dynamically render inputs based on the case schema -->
+
       <div v-for="input in activeCase.inputs" :key="input.key" class="dynamic-input">
         <label v-if="input.type !== 'checkbox'">{{ input.label }}</label>
-        
-        <!-- New Searchable Multi-Select -->
-        <SearchableSelect 
-          v-if="input.type === 'multiselect'" 
-          v-model="store.caseParams[input.key]" 
+
+        <SearchableSelect
+          v-if="input.type === 'multiselect'"
+          v-model="store.caseParams[input.key]"
           :options="getGroupedOptions(input.optionsSource)"
           :multiple="true"
           placeholder="Select multiple items..."
         />
 
-        <!-- New Searchable Single-Select -->
-        <SearchableSelect 
-          v-if="input.type === 'select'" 
-          v-model="store.caseParams[input.key]" 
+        <SearchableSelect
+          v-if="input.type === 'select'"
+          v-model="store.caseParams[input.key]"
           :options="getGroupedOptions(input.optionsSource)"
           :multiple="false"
           placeholder="Select an item..."
         />
-        
-        <!-- Checkbox -->
+
         <label v-if="input.type === 'checkbox'" class="checkbox-label" style="margin-top: 10px;">
           <input type="checkbox" v-model="store.caseParams[input.key]" />
           {{ input.label }}
         </label>
-        
-        <!-- Radio Buttons (For Case 5 depth selection) -->
+
         <div v-if="input.type === 'radio'" class="radio-group">
           <label v-for="opt in input.options" :key="opt.value" class="radio-label">
-            <input 
-              type="radio" 
-              :name="input.key" 
-              :value="opt.value" 
-              v-model="store.caseParams[input.key]" 
+            <input
+              type="radio"
+              :name="input.key"
+              :value="opt.value"
+              v-model="store.caseParams[input.key]"
             />
             {{ opt.label }}
           </label>
         </div>
-
       </div>
-      
+
       <!-- Engine Selector -->
       <div class="engine-selector">
         <label class="section-title">Visualisation Engine:</label>
@@ -350,14 +294,12 @@ const exportJson = () => {
       <button class="action-btn" :disabled="!store.isLoaded" @click="runAnalysis">
         {{ store.isLoaded ? 'Generate Diagram' : 'Please Load XML First' }}
       </button>
-      
-      <!-- New Data Action Buttons -->
+
       <div class="data-actions" v-if="store.renderPayload.nodes.size > 0">
         <button class="export-json-btn" @click="exportJson">💾 Export Data (JSON)</button>
         <button class="clear-btn" @click="clearDiagram">🗑️ Clear Diagram</button>
       </div>
-      
-      <!-- Status Message -->
+
       <div v-if="store.uiMessage.text" :class="['status-msg', store.uiMessage.type]">
         {{ store.uiMessage.text }}
       </div>
@@ -394,7 +336,7 @@ const exportJson = () => {
 .status-msg.error { background: #f8d7da; color: #721c24; border: 1px solid #f5c6cb; }
 .status-msg.warning { background: #fff3cd; color: #856404; border: 1px solid #ffeeba; }
 
-.radio-group { display: flex; gap: 15px; margin-top: 5px; }
+.radio-group { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 5px; }
 .radio-label { display: flex; align-items: center; gap: 5px; cursor: pointer; font-size: 13px; }
 
 .data-actions { display: flex; gap: 10px; margin-top: 5px; }
