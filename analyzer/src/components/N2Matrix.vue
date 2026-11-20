@@ -765,18 +765,17 @@ tr.row-highlighted .row-header {
 /* Corner indicators inside matrix cells */
 .corner-badge {
   position: absolute;
-  font-size: 8px;
-  font-weight: 800;
+  font-size: 7.5px;
+  font-weight: 700;
   line-height: 1;
-  padding: 1px 2px;
-  border-radius: 2px;
-  background: rgba(255, 255, 255, 0.85);
+  color: inherit;
+  opacity: 0.72;
   pointer-events: none;
   z-index: 2;
 }
-.badge-e { top: 1px; left: 1px; color: #0284c7; }      /* Top-left: Enables */
-.badge-s { top: 1px; right: 1px; color: #7c3aed; }     /* Top-right: Situational */
-.badge-c { bottom: 1px; left: 1px; color: #b45309; }   /* Bottom-left: Controls */
+.badge-e { top: 2px; left: 3px; }      /* Top-left: Enables */
+.badge-s { top: 2px; right: 3px; }     /* Top-right: Situational */
+.badge-c { bottom: 2px; left: 3px; }   /* Bottom-left: Controls */
 
 /* Inspector Drawer */
 .n2-inspector {
