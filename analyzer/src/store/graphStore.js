@@ -19,27 +19,36 @@ export const store = reactive({
     includeSituational: false
   },
 
-  // Top-level workspace view: 'graph' | 'n2' | 'checklist' | 'hotspots' | 'dictionary'
+  // Top-level projection / workspace view:
+  // Visual projections: 'graph' (2D Diagram) | 'space3d' (3D Space) | 'n2' (N2 Matrix)
+  // Reference views:    'checklist' | 'hotspots' | 'dictionary'
   activeView: 'graph',
 
-  // Graph rendering engine (used in 'graph' view): 'mermaid' | 'visjs' | '3d'
+  // 2D diagram renderer (used inside 'graph' view): 'mermaid' | 'visjs'
   activeEngine: 'mermaid',
 
-  // 3D display preferences (shared for deep linking)
+  // 2D Vis.js display preferences
+  visOptions: {
+    scope: 'slice',      // 'slice' | 'context' | 'full'
+    useRings: false      // Concentric Process Group circles (Onion layout)
+  },
+
+  // Unified 3D Space display preferences
   threeOptions: {
-    showLabels: true,
-    isLayered: false
+    scope: 'full',       // 'slice' | 'context' | 'full'
+    showLabels: false,
+    isLayered: true
   },
 
   // Selected process in Process Checklist view
   selectedChecklistProcessId: '',
 
-  // Scenario Builder state
+  // Scenario / Slice Builder state
   activeCaseId: 'case_1',
   caseParams: {},
   uiMessage: { text: '', type: '' },
 
-  // Universal Graph Data payload for graph renderers
+  // Universal Graph Data payload for active slice
   renderPayload: {
     nodes: new Set(),
     edges: [],
@@ -73,8 +82,10 @@ export function getCaseDefaults(caseId) {
 
 /**
  * Executes the currently selected case and updates renderPayload.
+ * Keeps the user on 2D Diagram, 3D Space, or N2 Matrix if already viewing one;
+ * switches to 2D Diagram if currently on a reference tab.
  */
-export function executeActiveCase(switchToGraphView = true) {
+export function executeActiveCase(autoSwitchView = true) {
   if (!store.isLoaded) return false;
   const activeCase = CaseRegistry[store.activeCaseId];
   if (!activeCase) return false;
@@ -93,13 +104,9 @@ export function executeActiveCase(switchToGraphView = true) {
   }
 
   store.uiMessage = {
-    text: result.message || 'Diagram generated!',
+    text: result.message || 'Slice generated!',
     type: result.warning ? 'warning' : 'success'
   };
-
-  if (switchToGraphView) {
-    store.activeView = 'graph';
-  }
 
   store.renderPayload = {
     nodes: result.nodes,
@@ -110,6 +117,21 @@ export function executeActiveCase(switchToGraphView = true) {
     orderedPath: result.orderedPath || null,
     analysisSummary: result.analysisSummary || null
   };
+
+  if (autoSwitchView) {
+    if (store.activeView === 'space3d') {
+      if (store.threeOptions.scope === 'full') {
+        store.threeOptions.scope = 'context';
+      }
+    } else if (store.activeView === 'graph' && store.activeEngine === 'visjs') {
+      if (store.visOptions.scope === 'full') {
+        store.visOptions.scope = 'context';
+      }
+    } else if (!['graph', 'n2'].includes(store.activeView)) {
+      store.activeView = 'graph';
+    }
+  }
+
   return true;
 }
 
@@ -162,7 +184,6 @@ export function reparseCurrentModel() {
   }
 }
 
-// Automatically re-parse when meta-level inheritance settings change
 watch(
   () => [store.settings.includeEnables, store.settings.includeControls, store.settings.includeSituational],
   () => {

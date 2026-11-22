@@ -64,7 +64,6 @@ const getGroupedOptions = (sourceKey) => {
 
 const activeCase = computed(() => CaseRegistry[store.activeCaseId]);
 
-// Only reset parameters when the user explicitly switches scenario in the dropdown
 const handleCaseChange = () => {
   store.caseParams = getCaseDefaults(store.activeCaseId);
   store.uiMessage = { text: '', type: '' };
@@ -140,12 +139,12 @@ const clearDiagram = () => {
     orderedPath: null,
     analysisSummary: null
   };
-  store.uiMessage = { text: 'Diagram memory cleared.', type: 'warning' };
+  store.uiMessage = { text: 'Active slice cleared.', type: 'warning' };
 };
 
 const exportJson = () => {
   if (!store.renderPayload || store.renderPayload.nodes.size === 0) {
-    alert("Generate a diagram first!");
+    alert("Generate a slice first!");
     return;
   }
 
@@ -221,7 +220,7 @@ const exportJson = () => {
         class="collapse-header"
         @click="isGlobalSettingsOpen = !isGlobalSettingsOpen"
         :aria-expanded="isGlobalSettingsOpen"
-        title="Applies across Scenario Graphs, N2 Matrix, Checklist, and Hotspots"
+        title="Applies across 2D Diagram, 3D Space, N2 Matrix, Checklist, and Hotspots"
       >
         <span class="collapse-title-group">
           <span class="chevron">{{ isGlobalSettingsOpen ? '▼' : '▶' }}</span>
@@ -260,11 +259,11 @@ const exportJson = () => {
 
     <hr class="divider" />
 
-    <!-- 3. Scenario Graph Builder -->
+    <!-- 3. Slice / Query Builder -->
     <div class="section">
       <div class="section-header-row">
-        <label class="section-title">Scenario Graph Builder</label>
-        <span class="scope-hint">Graph tab</span>
+        <label class="section-title">Analysis Slice (Query)</label>
+        <span class="scope-hint" title="Feeds 2D Diagram, 3D Space (Slice / In Context), and N2 Matrix">2D · 3D · N2</span>
       </div>
 
       <select v-model="store.activeCaseId" @change="handleCaseChange" class="case-select">
@@ -328,23 +327,13 @@ const exportJson = () => {
           </div>
         </div>
 
-        <!-- Graph Engine Selector (Only graph renderers) -->
-        <div class="engine-selector">
-          <label class="sub-title">Graph Renderer</label>
-          <div class="radio-group">
-            <label class="radio-label"><input type="radio" value="mermaid" v-model="store.activeEngine" /> Mermaid.js</label>
-            <label class="radio-label"><input type="radio" value="visjs" v-model="store.activeEngine" /> Vis.js (2D)</label>
-            <label class="radio-label"><input type="radio" value="3d" v-model="store.activeEngine" /> 3D Force</label>
-          </div>
-        </div>
-
         <button class="action-btn" :disabled="!store.isLoaded" @click="runAnalysis">
-          {{ store.isLoaded ? 'Generate Diagram' : 'Please Load XML First' }}
+          {{ store.isLoaded ? 'Apply Slice / Generate' : 'Please Load XML First' }}
         </button>
 
         <div class="data-actions" v-if="store.renderPayload.nodes.size > 0">
           <button class="export-json-btn" @click="exportJson">💾 Export JSON</button>
-          <button class="clear-btn" @click="clearDiagram">🗑️ Clear</button>
+          <button class="clear-btn" @click="clearDiagram">🗑️ Clear Slice</button>
         </div>
 
         <div v-if="store.uiMessage.text" :class="['status-msg', store.uiMessage.type]">

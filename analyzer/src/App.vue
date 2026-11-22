@@ -6,11 +6,14 @@ import { store, loadDefaultModel, getCaseDefaults, executeActiveCase } from './s
 import { CaseRegistry } from './cases/caseRegistry.js';
 import { parseUrlState, buildShareUrl } from './core/urlState.js';
 
-const workspaceTabs = [
-  { id: 'graph', label: '🕸️ Scenario Graph' },
-  { id: 'model3d', label: '🌐 3D Full Model' },
-  { id: 'n2', label: '🔢 N2 / DSM Matrix' },
-  { id: 'checklist', label: '📋 Process Checklist' },
+const projectionTabs = [
+  { id: 'graph', label: '🕸️ 2D Diagram' },
+  { id: 'space3d', label: '🌐 3D Space' },
+  { id: 'n2', label: '🔢 N2 Matrix' }
+];
+
+const referenceTabs = [
+  { id: 'checklist', label: '📋 Checklist' },
   { id: 'hotspots', label: '🔥 Hotspots' },
   { id: 'dictionary', label: '🔍 Dictionary' }
 ];
@@ -59,12 +62,14 @@ onMounted(async () => {
 
   const urlState = parseUrlState();
 
-  // Apply global settings before XML parsing so inheritance flags take effect immediately
   if (urlState?.settings) {
     Object.assign(store.settings, urlState.settings);
   }
   if (urlState?.activeView) store.activeView = urlState.activeView;
   if (urlState?.activeEngine) store.activeEngine = urlState.activeEngine;
+  if (urlState?.scope2d) store.visOptions.scope = urlState.scope2d;
+  if (urlState?.use2DRings !== undefined) store.visOptions.useRings = urlState.use2DRings;
+  if (urlState?.scope3d) store.threeOptions.scope = urlState.scope3d;
   if (urlState?.is3DLayered !== undefined) store.threeOptions.isLayered = urlState.is3DLayered;
   if (urlState?.show3DLabels !== undefined) store.threeOptions.showLabels = urlState.show3DLabels;
   if (urlState?.selectedChecklistProcessId) {
@@ -86,7 +91,7 @@ onMounted(async () => {
   }
 
   if (urlState?.autoRun && store.isLoaded) {
-    executeActiveCase(store.activeView === 'graph');
+    executeActiveCase(false);
   }
 });
 
@@ -97,7 +102,7 @@ onUnmounted(() => {
 
 <template>
   <div class="app-shell">
-    <!-- Unified Top Header Bar (Two columns: Brand + Sidebar Toggle | Workspace Tabs + Share) -->
+    <!-- Unified Top Header Bar -->
     <header class="app-topbar">
       <div class="topbar-brand" :class="{ collapsed: !isMobile && isSidebarCollapsed }">
         <button
@@ -114,15 +119,31 @@ onUnmounted(() => {
 
       <div class="topbar-workspace">
         <nav class="workspace-tabs">
-          <button
-            v-for="tab in workspaceTabs"
-            :key="tab.id"
-            :class="['ws-tab', { active: store.activeView === tab.id }]"
-            :disabled="!store.isLoaded && tab.id !== 'graph'"
-            @click="store.activeView = tab.id"
-          >
-            {{ tab.label }}
-          </button>
+          <div class="tab-group">
+            <button
+              v-for="tab in projectionTabs"
+              :key="tab.id"
+              :class="['ws-tab', { active: store.activeView === tab.id }]"
+              :disabled="!store.isLoaded && tab.id !== 'graph'"
+              @click="store.activeView = tab.id"
+            >
+              {{ tab.label }}
+            </button>
+          </div>
+
+          <span class="tab-divider" aria-hidden="true"></span>
+
+          <div class="tab-group">
+            <button
+              v-for="tab in referenceTabs"
+              :key="tab.id"
+              :class="['ws-tab', { active: store.activeView === tab.id }]"
+              :disabled="!store.isLoaded"
+              @click="store.activeView = tab.id"
+            >
+              {{ tab.label }}
+            </button>
+          </div>
         </nav>
 
         <div class="workspace-actions">
@@ -130,7 +151,7 @@ onUnmounted(() => {
             class="share-btn"
             :disabled="!store.isLoaded"
             @click="copyShareLink"
-            title="Copy a direct link to this view, global settings, and current diagram"
+            title="Copy a direct link to this view, global settings, and current slice"
           >
             {{ shareStatus || '🔗 Share Link' }}
           </button>
@@ -138,7 +159,7 @@ onUnmounted(() => {
       </div>
     </header>
 
-    <!-- Main Body: Collapsible Sidebar + Full-Width Workspace -->
+    <!-- Main Body: Collapsible Settings & Slice Sidebar + Full-Width View Stage -->
     <div class="app-body">
       <aside
         :class="[
@@ -150,7 +171,7 @@ onUnmounted(() => {
         ]"
       >
         <div v-if="isMobile" class="mobile-sidebar-header">
-          <span>Settings &amp; Scenarios</span>
+          <span>Settings &amp; Slices</span>
           <button class="close-btn" @click="isMobileMenuOpen = false">×</button>
         </div>
         <Sidebar />
@@ -160,7 +181,6 @@ onUnmounted(() => {
         <GraphCanvas />
       </main>
 
-      <!-- Dimmed backdrop for mobile drawer -->
       <div
         v-if="isMobile && isMobileMenuOpen"
         class="mobile-overlay"
@@ -190,7 +210,7 @@ html, body, #app {
   padding: 0;
   width: 100%;
   height: 100%;
-  overflow: hidden; /* Prevent page-level scroll */
+  overflow: hidden;
 }
 
 body {
@@ -278,7 +298,21 @@ body {
 .workspace-tabs {
   display: flex;
   flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.tab-group {
+  display: flex;
+  flex-wrap: wrap;
   gap: 6px;
+}
+
+.tab-divider {
+  width: 1px;
+  height: 22px;
+  background: #cbd5e1;
+  margin: 0 2px;
 }
 
 .ws-tab {
@@ -395,7 +429,6 @@ body {
   display: none;
 }
 
-/* Responsive layout for mobile screens (< 768px) */
 @media (max-width: 768px) {
   .topbar-brand {
     width: auto;
@@ -403,6 +436,9 @@ body {
   }
   .app-title {
     font-size: 0.95rem;
+  }
+  .tab-divider {
+    display: none;
   }
   .sidebar {
     position: fixed;

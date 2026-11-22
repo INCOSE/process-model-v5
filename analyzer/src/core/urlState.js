@@ -3,8 +3,9 @@
  * into shareable URL query parameters.
  */
 
-const VALID_VIEWS = new Set(['graph', 'model3d', 'n2', 'checklist', 'hotspots', 'dictionary']);
-const VALID_ENGINES = new Set(['mermaid', 'visjs', '3d']);
+const VALID_VIEWS = new Set(['graph', 'space3d', 'n2', 'checklist', 'hotspots', 'dictionary']);
+const VALID_2D_ENGINES = new Set(['mermaid', 'visjs']);
+const VALID_SCOPES = new Set(['slice', 'context', 'full']);
 
 function encodeParams(obj) {
   try {
@@ -59,27 +60,28 @@ export function buildShareUrl(store) {
     q.set('proc', store.selectedChecklistProcessId);
   }
 
-  if (store.activeView === 'model3d') {
-    if (store.threeOptions.isLayered) q.set('layers', '1');
-    if (!store.threeOptions.showLabels) q.set('labels', '0');
-  }
-
   if (store.activeView === 'graph') {
     q.set('engine', store.activeEngine || 'mermaid');
-    if (store.activeEngine === '3d') {
-      if (store.threeOptions.isLayered) q.set('layers', '1');
-      if (!store.threeOptions.showLabels) q.set('labels', '0');
+    if (store.activeEngine === 'visjs') {
+      q.set('scope2d', store.visOptions.scope || 'slice');
+      q.set('rings', store.visOptions.useRings ? '1' : '0');
     }
-    if (store.activeCaseId) {
-      q.set('case', store.activeCaseId);
-    }
+  }
+
+  if (store.activeView === 'space3d') {
+    q.set('scope3d', store.threeOptions.scope || 'full');
+    q.set('layers', store.threeOptions.isLayered ? '1' : '0');
+    q.set('labels', store.threeOptions.showLabels ? '1' : '0');
+  }
+
+  const hasSlice = store.renderPayload && store.renderPayload.nodes.size > 0;
+  if (hasSlice && ['graph', 'space3d', 'n2'].includes(store.activeView)) {
+    if (store.activeCaseId) q.set('case', store.activeCaseId);
     if (store.caseParams && Object.keys(store.caseParams).length > 0) {
       const encoded = encodeParams(store.caseParams);
       if (encoded) q.set('p', encoded);
     }
-    if (store.renderPayload && store.renderPayload.nodes.size > 0) {
-      q.set('run', '1');
-    }
+    q.set('run', '1');
   }
 
   url.search = q.toString();
@@ -95,11 +97,30 @@ export function parseUrlState() {
 
   const state = {};
 
-  const view = q.get('view');
-  if (view && VALID_VIEWS.has(view)) state.activeView = view;
-
+  let view = q.get('view');
   const engine = q.get('engine');
-  if (engine && VALID_ENGINES.has(engine)) state.activeEngine = engine;
+
+  // Backwards compatibility with earlier URL formats
+  if (view === 'model3d') {
+    view = 'space3d';
+    state.scope3d = 'full';
+  } else if (view === 'graph' && engine === '3d') {
+    view = 'space3d';
+    state.scope3d = 'slice';
+  }
+
+  if (view && VALID_VIEWS.has(view)) state.activeView = view;
+  if (engine && VALID_2D_ENGINES.has(engine)) state.activeEngine = engine;
+
+  const scope2d = q.get('scope2d');
+  if (scope2d && VALID_SCOPES.has(scope2d)) state.scope2d = scope2d;
+
+  const rings = q.get('rings');
+  if (rings === '1') state.use2DRings = true;
+  else if (rings === '0') state.use2DRings = false;
+
+  const scope3d = q.get('scope3d');
+  if (scope3d && VALID_SCOPES.has(scope3d)) state.scope3d = scope3d;
 
   const flags = q.get('s');
   if (flags && flags.length === 5) {
@@ -121,8 +142,14 @@ export function parseUrlState() {
   const encodedParams = q.get('p');
   if (encodedParams) state.caseParams = decodeParams(encodedParams);
 
-  if (q.get('layers') === '1') state.is3DLayered = true;
-  if (q.get('labels') === '0') state.show3DLabels = false;
+  const layers = q.get('layers');
+  if (layers === '1') state.is3DLayered = true;
+  else if (layers === '0') state.is3DLayered = false;
+
+  const labels = q.get('labels');
+  if (labels === '1') state.show3DLabels = true;
+  else if (labels === '0') state.show3DLabels = false;
+
   if (q.get('run') === '1') state.autoRun = true;
 
   return state;

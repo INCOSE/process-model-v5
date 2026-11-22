@@ -3,22 +3,19 @@ import { ref, computed, watch, nextTick, onMounted, onUnmounted } from 'vue';
 import mermaid from 'mermaid';
 import svgPanZoom from 'svg-pan-zoom';
 import { Network } from 'vis-network';
-import ForceGraph3D from '3d-force-graph';
-import * as THREE from 'three';
 
 import { store, graphData, applyModelXml } from '../store/graphStore.js';
 import { graphToMermaidAndData } from '../renderers/mermaidGenerator.js';
-import { getProcessGroup, groupLayerY, groupColors } from '../core/iso15288Groups.js';
+import { getProcessGroup, getProcessOrderIndex, groupColors } from '../core/iso15288Groups.js';
 import { buildFlowSteps } from '../core/flowStepper.js';
 import N2Matrix from './N2Matrix.vue';
 import InsightsView from './InsightsView.vue';
-import FullModel3D from './FullModel3D.vue';
+import Space3D from './Space3D.vue';
 
 const stageRef = ref(null);
 const fileInput = ref(null);
 const mermaidDiv = ref(null);
 const visDiv = ref(null);
-const threeDiv = ref(null);
 
 const errorContent = ref('');
 const selectedNodeInfo = ref(null);
@@ -39,20 +36,44 @@ const currentStepIdx = ref(0);
 const isPlaying = ref(false);
 let playTimer = null;
 
+// Track currently rendered node IDs for search (especially in Vis.js Full/Context modes)
+const rendered2DNodeIds = ref([]);
+
+const hasSlice = computed(() => store.renderPayload && store.renderPayload.nodes.size > 0);
+const effectiveVisScope = computed(() => {
+    if (!hasSlice.value) return 'full';
+    return store.visOptions.scope || 'slice';
+});
+
+// Show 2D canvas whenever there is a slice OR when user is in Vis.js Full Model mode
+const show2DCanvas = computed(() => {
+    if (hasSlice.value) return true;
+    return store.activeEngine === 'visjs' && store.visOptions.scope === 'full';
+});
+
 const currentStepState = computed(() => {
     if (!stepperActive.value || flowSteps.value.length === 0) return null;
     return flowSteps.value[currentStepIdx.value] || null;
 });
 
-// Matching node IDs for in-canvas search
+const sliceEdgeKeySet = computed(() => {
+    const s = new Set();
+    (store.renderPayload.edges || []).forEach((e) => s.add(`${e.u}___${e.v}`));
+    return s;
+});
+
 const searchMatchList = computed(() => {
     const q = searchQuery.value.trim().toLowerCase();
-    if (!q || !store.renderPayload || store.renderPayload.nodes.size === 0) return [];
+    if (!q) return [];
     const gActive = graphData.gActive();
     if (!gActive) return [];
 
+    const sourceIds = store.activeEngine === 'visjs' && rendered2DNodeIds.value.length > 0
+        ? rendered2DNodeIds.value
+        : Array.from(store.renderPayload.nodes || []);
+
     const matches = [];
-    store.renderPayload.nodes.forEach((id) => {
+    sourceIds.forEach((id) => {
         const label = (store.renderPayload.customLabels?.[id] || (gActive.hasNode(id) ? gActive.getNodeAttribute(id, 'name') : '') || '').toLowerCase();
         if (label.includes(q)) {
             matches.push(id);
@@ -70,10 +91,18 @@ let panZoomInstance = null;
 let visNetworkInstance = null;
 let visBaseNodes = [];
 let visBaseEdges = [];
-let threeGraphInstance = null;
-let threeLayerPlanesGroup = null;
 let resizeObserver = null;
 let resizeRaf = null;
+
+// Concentric ring geometry for 2D Vis.js "Process Groups" (Onion) layout
+// Tailoring is intentionally excluded from the concentric rings.
+const ONION_RING_GROUPS = [
+    { group: 'Technical', label: 'Technical Processes', radius: 340, fill: 'rgba(46, 125, 50, 0.045)', stroke: 'rgba(46, 125, 50, 0.38)' },
+    { group: 'Technical Management', label: 'Technical Management', radius: 640, fill: 'rgba(21, 101, 192, 0.035)', stroke: 'rgba(21, 101, 192, 0.34)' },
+    { group: 'Organizational Project-Enabling', label: 'Organisational Project-Enabling', radius: 920, fill: 'rgba(106, 27, 154, 0.03)', stroke: 'rgba(106, 27, 154, 0.30)' },
+    { group: 'Agreement', label: 'Agreement', radius: 1160, fill: 'rgba(198, 40, 40, 0.025)', stroke: 'rgba(198, 40, 40, 0.28)' },
+    { group: 'External', label: 'External Boundary', radius: 1380, fill: 'rgba(55, 71, 79, 0.02)', stroke: 'rgba(55, 71, 79, 0.32)' }
+];
 
 mermaid.initialize({
     startOnLoad: false,
@@ -110,7 +139,7 @@ const showNodeInfo = (rawId) => {
     const gActive = graphData.gActive();
 
     if (gActive && gActive.hasNode(originalId)) {
-        const name = store.renderPayload.customLabels[originalId] || gActive.getNodeAttribute(originalId, 'name') || 'Unknown';
+        const name = store.renderPayload.customLabels?.[originalId] || gActive.getNodeAttribute(originalId, 'name') || 'Unknown';
         const type = gActive.getNodeAttribute(originalId, 'type') || '';
         const isProc = type.includes('BusinessFunction') || type.includes('BusinessProcess');
         const group = isProc ? getProcessGroup(name) : 'Business Object';
@@ -177,8 +206,12 @@ const applyMermaidPinnedClasses = () => {
     });
 };
 
-// --- REPORT INTERACTIVE ACTIONS (PIN HIGHLIGHT & ZOOM-TO-NODE) ---
-const isNodeInDiagram = (nodeId) => Boolean(nodeId && store.renderPayload.nodes.has(nodeId));
+// --- REPORT INTERACTIVE ACTIONS ---
+const isNodeInDiagram = (nodeId) => {
+    if (!nodeId) return false;
+    if (store.activeEngine === 'visjs') return rendered2DNodeIds.value.includes(nodeId);
+    return store.renderPayload.nodes.has(nodeId);
+};
 
 const togglePinNode = (nodeId) => {
     if (!isNodeInDiagram(nodeId)) return;
@@ -191,8 +224,6 @@ const togglePinNode = (nodeId) => {
         applyMermaidPinnedClasses();
     } else if (store.activeEngine === 'visjs') {
         applyVisVisualState();
-    } else if (store.activeEngine === '3d') {
-        apply3DVisualState();
     }
 };
 
@@ -202,8 +233,6 @@ const clearPinnedNodes = () => {
         applyMermaidPinnedClasses();
     } else if (store.activeEngine === 'visjs') {
         applyVisVisualState();
-    } else if (store.activeEngine === '3d') {
-        apply3DVisualState();
     }
 };
 
@@ -247,24 +276,10 @@ const zoomToNode = (nodeId) => {
 
     } else if (store.activeEngine === 'visjs' && visNetworkInstance) {
         visNetworkInstance.focus(nodeId, {
-            scale: 1.35,
+            scale: 1.15,
             animation: { duration: 450, easingFunction: 'easeInOutQuad' }
         });
         visNetworkInstance.selectNodes([nodeId]);
-
-    } else if (store.activeEngine === '3d' && threeGraphInstance) {
-        const nodes = threeGraphInstance.graphData().nodes || [];
-        const node = nodes.find((n) => n.id === nodeId);
-        if (node && typeof node.x === 'number') {
-            const distance = 150;
-            const len = Math.hypot(node.x || 1, node.y || 1, node.z || 1);
-            const distRatio = 1 + distance / len;
-            threeGraphInstance.cameraPosition(
-                { x: node.x * distRatio, y: node.y + 38, z: node.z * distRatio },
-                node,
-                650
-            );
-        }
     }
 };
 
@@ -294,7 +309,7 @@ const toggleStepper = () => {
     if (stepperActive.value) {
         stopAutoPlay();
         stepperActive.value = false;
-    } else {
+    } else if (hasSlice.value) {
         flowSteps.value = buildFlowSteps(graphData.gActive(), store.renderPayload);
         if (flowSteps.value.length > 0) {
             currentStepIdx.value = 0;
@@ -340,22 +355,7 @@ const toggleAutoPlay = () => {
 };
 
 // --- CLEANUP HELPERS ---
-const clear3DLayerPlanes = () => {
-    if (threeLayerPlanesGroup && threeGraphInstance) {
-        threeGraphInstance.scene().remove(threeLayerPlanesGroup);
-        threeLayerPlanesGroup.traverse((obj) => {
-            if (obj.geometry) obj.geometry.dispose();
-            if (obj.material) {
-                if (obj.material.map) obj.material.map.dispose();
-                obj.material.dispose();
-            }
-        });
-    }
-    threeLayerPlanesGroup = null;
-};
-
 const destroyRenderers = () => {
-    clear3DLayerPlanes();
     if (panZoomInstance) {
         panZoomInstance.destroy();
         panZoomInstance = null;
@@ -363,12 +363,6 @@ const destroyRenderers = () => {
     if (visNetworkInstance) {
         visNetworkInstance.destroy();
         visNetworkInstance = null;
-    }
-    if (threeGraphInstance) {
-        if (typeof threeGraphInstance._destructor === 'function') {
-            threeGraphInstance._destructor();
-        }
-        threeGraphInstance = null;
     }
 };
 
@@ -387,173 +381,7 @@ const handleFileUpload = (event) => {
     event.target.value = '';
 };
 
-// --- 3D SPRITE LABEL BUILDER ---
-const createTextSprite = (node) => {
-    const maxChars = 24;
-    const words = (node.name || '').split(/\s+/);
-    const lines = [];
-    let current = '';
-
-    for (const word of words) {
-        if (!current) current = word;
-        else if ((current + ' ' + word).length <= maxChars) current += ' ' + word;
-        else {
-            lines.push(current);
-            current = word;
-        }
-    }
-    if (current) lines.push(current);
-
-    const fontSize = node.isHighlighted ? 22 : 18;
-    const lineHeight = fontSize * 1.25;
-    const padX = 14;
-    const padY = 8;
-
-    const canvas = document.createElement('canvas');
-    const ctx = canvas.getContext('2d');
-    const fontStr = `${node.isHighlighted ? 'bold ' : '600 '}${fontSize}px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif`;
-    ctx.font = fontStr;
-
-    const maxLineWidth = Math.max(...lines.map(l => ctx.measureText(l).width), 40);
-    canvas.width = Math.ceil(maxLineWidth + padX * 2);
-    canvas.height = Math.ceil(lines.length * lineHeight + padY * 2);
-
-    const r = 8;
-    const w = canvas.width;
-    const h = canvas.height;
-    ctx.fillStyle = node.isHighlighted ? 'rgba(255, 243, 224, 0.92)' : 'rgba(255, 255, 255, 0.88)';
-    ctx.strokeStyle = node.isHighlighted ? '#D79B00' : (node.isProc ? '#D6B656' : '#82B366');
-    ctx.lineWidth = node.isHighlighted ? 3 : 2;
-
-    ctx.beginPath();
-    ctx.moveTo(r, 1);
-    ctx.lineTo(w - r, 1);
-    ctx.quadraticCurveTo(w - 1, 1, w - 1, r);
-    ctx.lineTo(w - 1, h - r);
-    ctx.quadraticCurveTo(w - 1, h - 1, w - r, h - 1);
-    ctx.lineTo(r, h - 1);
-    ctx.quadraticCurveTo(1, h - 1, 1, h - r);
-    ctx.lineTo(1, r);
-    ctx.quadraticCurveTo(1, 1, r, 1);
-    ctx.closePath();
-    ctx.fill();
-    ctx.stroke();
-
-    ctx.font = fontStr;
-    ctx.fillStyle = node.isHighlighted ? '#8A5A00' : '#2c3e50';
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    lines.forEach((line, idx) => {
-        const y = padY + lineHeight * (idx + 0.5);
-        ctx.fillText(line, w / 2, y);
-    });
-
-    const texture = new THREE.CanvasTexture(canvas);
-    texture.minFilter = THREE.LinearFilter;
-    const spriteMaterial = new THREE.SpriteMaterial({
-        map: texture,
-        transparent: true,
-        depthTest: true,
-        depthWrite: false
-    });
-    const sprite = new THREE.Sprite(spriteMaterial);
-
-    const scale = node.isHighlighted ? 0.17 : 0.14;
-    sprite.scale.set(canvas.width * scale, canvas.height * scale, 1);
-    const yOffset = (node.isHighlighted ? 11 : (node.isProc ? 9 : 7)) + (lines.length * 1.5);
-    sprite.position.set(0, yOffset, 0);
-    return sprite;
-};
-
-// --- 3D PROCESS GROUP PLANES BUILDER ---
-const createLayerLabelSprite = (text, colorHex) => {
-    const canvas = document.createElement('canvas');
-    const ctx = canvas.getContext('2d');
-    const fontStr = 'bold 26px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
-    ctx.font = fontStr;
-    const textW = ctx.measureText(text).width;
-    canvas.width = Math.ceil(textW + 32);
-    canvas.height = 46;
-
-    ctx.fillStyle = 'rgba(255, 255, 255, 0.92)';
-    ctx.strokeStyle = colorHex;
-    ctx.lineWidth = 3;
-    ctx.fillRect(2, 2, canvas.width - 4, canvas.height - 4);
-    ctx.strokeRect(2, 2, canvas.width - 4, canvas.height - 4);
-
-    ctx.font = fontStr;
-    ctx.fillStyle = colorHex;
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.fillText(text, canvas.width / 2, canvas.height / 2);
-
-    const texture = new THREE.CanvasTexture(canvas);
-    texture.minFilter = THREE.LinearFilter;
-    const mat = new THREE.SpriteMaterial({ map: texture, transparent: true, depthWrite: false });
-    const sprite = new THREE.Sprite(mat);
-    sprite.scale.set(canvas.width * 0.28, canvas.height * 0.28, 1);
-    return sprite;
-};
-
-const add3DLayerPlanes = (nodes, planeSize) => {
-    if (!threeGraphInstance || !store.threeOptions.isLayered) return;
-    clear3DLayerPlanes();
-
-    const activeGroups = new Set();
-    nodes.forEach((n) => {
-        if (n.isProc && n.group && groupLayerY[n.group] !== undefined) {
-            activeGroups.add(n.group);
-        }
-    });
-
-    if (activeGroups.size === 0) return;
-
-    const groupObj = new THREE.Group();
-    const half = planeSize / 2;
-
-    activeGroups.forEach((groupName) => {
-        const y = groupLayerY[groupName];
-        const colorHex = groupColors[groupName] || '#546e7a';
-        const threeColor = new THREE.Color(colorHex);
-
-        const planeGeo = new THREE.PlaneGeometry(planeSize, planeSize);
-        const planeMat = new THREE.MeshBasicMaterial({
-            color: threeColor,
-            transparent: true,
-            opacity: 0.08,
-            side: THREE.DoubleSide,
-            depthWrite: false
-        });
-        const planeMesh = new THREE.Mesh(planeGeo, planeMat);
-        planeMesh.rotation.x = -Math.PI / 2;
-        planeMesh.position.y = y;
-        groupObj.add(planeMesh);
-
-        const borderPoints = [
-            new THREE.Vector3(-half, y, -half),
-            new THREE.Vector3(half, y, -half),
-            new THREE.Vector3(half, y, half),
-            new THREE.Vector3(-half, y, half)
-        ];
-        const borderGeo = new THREE.BufferGeometry().setFromPoints(borderPoints);
-        const borderMat = new THREE.LineBasicMaterial({
-            color: threeColor,
-            transparent: true,
-            opacity: 0.42
-        });
-        const borderLoop = new THREE.LineLoop(borderGeo, borderMat);
-        groupObj.add(borderLoop);
-
-        const labelSprite = createLayerLabelSprite(groupName, colorHex);
-        labelSprite.position.set(-half + 75, y + 10, half - 22);
-        groupObj.add(labelSprite);
-    });
-
-    threeLayerPlanesGroup = groupObj;
-    threeGraphInstance.scene().add(groupObj);
-};
-
-// --- APPLY STEP / SEARCH / REPORT-PIN VISUAL STATE TO VIS.JS & 3D IN-PLACE ---
+// --- APPLY STEP / SEARCH / REPORT-PIN / IN-CONTEXT STATE TO VIS.JS ---
 const applyVisVisualState = () => {
     if (!visNetworkInstance) return;
     const nodesDS = visNetworkInstance.body.data.nodes;
@@ -562,6 +390,7 @@ const applyVisVisualState = () => {
     const matches = searchMatchSet.value;
     const pinned = pinnedNodeIds.value;
     const hasPins = pinned.size > 0;
+    const mode = effectiveVisScope.value;
 
     const updatedNodes = visBaseNodes.map((n) => {
         if (pinned.has(n.id)) {
@@ -585,7 +414,7 @@ const applyVisVisualState = () => {
                 ...n,
                 color: { background: '#f5f5f5', border: '#dcdcdc' },
                 font: { ...n.font, color: '#a0a0a0' },
-                opacity: 0.25
+                opacity: 0.22
             };
         }
         if (stepState) {
@@ -604,11 +433,19 @@ const applyVisVisualState = () => {
                 ...n,
                 color: { background: '#f3f4f6', border: '#d1d5db' },
                 font: { ...n.font, color: '#9ca3af' },
-                opacity: 0.3
+                opacity: 0.25
             };
         }
         if (hasPins) {
-            return { ...n, opacity: 0.45 };
+            return { ...n, opacity: n._inSlice ? 0.5 : 0.22 };
+        }
+        if (mode === 'context' && !n._inSlice) {
+            return {
+                ...n,
+                color: { background: '#f5f7fa', border: '#d5dce4' },
+                font: { ...n.font, color: '#94a3b8' },
+                opacity: 0.4
+            };
         }
         return n;
     });
@@ -626,7 +463,7 @@ const applyVisVisualState = () => {
             const touched = matches.has(e.from) || matches.has(e.to);
             return touched
                 ? { ...e, width: 2 }
-                : { ...e, width: 1, color: { color: 'rgba(180,180,180,0.22)' }, font: { ...e.font, color: 'rgba(160,160,160,0.3)' } };
+                : { ...e, width: 0.8, color: { color: 'rgba(180,180,180,0.18)' }, font: { ...e.font, color: 'rgba(160,160,160,0.22)' } };
         }
         if (stepState) {
             const key = `${e.from}___${e.to}`;
@@ -643,17 +480,32 @@ const applyVisVisualState = () => {
             }
             return {
                 ...e,
-                width: 1,
-                color: { color: 'rgba(180,180,180,0.28)' },
-                font: { ...e.font, color: 'rgba(160,160,160,0.35)' }
+                width: 0.8,
+                color: { color: 'rgba(180,180,180,0.22)' },
+                font: { ...e.font, color: 'rgba(160,160,160,0.25)' }
+            };
+        }
+        if (mode === 'context') {
+            if (e._inSlice) {
+                return {
+                    ...e,
+                    width: 2.4,
+                    color: { color: e.dashes ? '#64748b' : '#2e7d32', highlight: '#1b5e20' }
+                };
+            }
+            return {
+                ...e,
+                width: 0.7,
+                label: '',
+                color: { color: 'rgba(180,190,200,0.22)' }
             };
         }
         if (hasPins) {
             return {
                 ...e,
                 width: 1,
-                color: { color: 'rgba(180,180,180,0.32)' },
-                font: { ...e.font, color: 'rgba(160,160,160,0.4)' }
+                color: { color: 'rgba(180,180,180,0.3)' },
+                font: { ...e.font, color: 'rgba(160,160,160,0.35)' }
             };
         }
         return e;
@@ -663,82 +515,132 @@ const applyVisVisualState = () => {
     edgesDS.update(updatedEdges);
 };
 
-const apply3DVisualState = () => {
-    if (!threeGraphInstance) return;
-    const stepState = currentStepState.value;
-    const matches = searchMatchSet.value;
-    const pinned = pinnedNodeIds.value;
-    const hasPins = pinned.size > 0;
+// --- 2D CONCENTRIC RING POSITIONING (ONION LAYOUT) ---
+const computeOnionPositions = (nodesList, edgesList) => {
+    const ringRadiusByGroup = {};
+    ONION_RING_GROUPS.forEach((r) => { ringRadiusByGroup[r.group] = r.radius; });
 
-    threeGraphInstance
-        .nodeColor((node) => {
-            if (pinned.has(node.id)) return '#D81B60';
-            if (matches !== null) {
-                return matches.has(node.id) ? '#E65100' : '#dde1e6';
-            }
-            if (stepState) {
-                if (stepState.activeNodes.has(node.id)) return '#1565C0';
-                if (stepState.visitedNodes.has(node.id)) return node.color;
-                return '#d8dde3';
-            }
-            if (hasPins) return '#cfd6de';
-            return node.color;
-        })
-        .nodeVal((node) => {
-            if (pinned.has(node.id)) return Math.max(node.val * 2.2, 16);
-            if (matches !== null && matches.has(node.id)) return Math.max(node.val * 1.9, 14);
-            return node.val;
-        })
-        .linkColor((link) => {
-            const u = typeof link.source === 'object' ? link.source.id : link.source;
-            const v = typeof link.target === 'object' ? link.target.id : link.target;
-            const key = `${u}___${v}`;
-            if (hasPins && (pinned.has(u) || pinned.has(v))) return '#D81B60';
-            if (matches !== null) {
-                return (matches.has(u) || matches.has(v)) ? '#E65100' : '#e5e7eb';
-            }
-            if (stepState) {
-                if (stepState.activeEdges.has(key)) return '#1565C0';
-                if (stepState.visitedEdges.has(key)) return '#7a869a';
-                return '#e5e7eb';
-            }
-            if (hasPins) return '#e2e8f0';
-            return link.isSystemic ? '#b0b8c1' : '#7a869a';
-        })
-        .linkWidth((link) => {
-            const u = typeof link.source === 'object' ? link.source.id : link.source;
-            const v = typeof link.target === 'object' ? link.target.id : link.target;
-            const key = `${u}___${v}`;
-            if (hasPins && (pinned.has(u) || pinned.has(v))) return 2.8;
-            if (matches !== null) {
-                return (matches.has(u) || matches.has(v)) ? 2.4 : 0.4;
-            }
-            if (stepState) {
-                if (stepState.activeEdges.has(key)) return 3;
-                if (stepState.visitedEdges.has(key)) return 1.2;
-                return 0.4;
-            }
-            if (hasPins) return 0.5;
-            return link.isSystemic ? 0.8 : 1.4;
-        })
-        .linkDirectionalParticles((link) => {
-            const u = typeof link.source === 'object' ? link.source.id : link.source;
-            const v = typeof link.target === 'object' ? link.target.id : link.target;
-            const key = `${u}___${v}`;
-            if (hasPins) return (pinned.has(u) || pinned.has(v)) ? 3 : 0;
-            if (matches !== null) return (matches.has(u) || matches.has(v)) ? 2 : 0;
-            if (stepState) return stepState.activeEdges.has(key) ? 4 : 0;
-            return link.isSystemic ? 1 : 2;
-        })
-        .linkDirectionalParticleColor((link) => {
-            if (hasPins) return '#D81B60';
-            if (matches !== null) return '#E65100';
-            if (stepState) return '#1565C0';
-            return link.isSystemic ? '#9aa5b1' : '#4CAF50';
+    const procsByGroup = {};
+    const artefacts = [];
+
+    nodesList.forEach((n) => {
+        if (n._isProc) {
+            const g = n._group;
+            if (!procsByGroup[g]) procsByGroup[g] = [];
+            procsByGroup[g].push(n);
+        } else {
+            artefacts.push(n);
+        }
+    });
+
+    const posById = new Map();
+    const angleById = new Map();
+    const radiusById = new Map();
+
+    // 1. Place processes evenly around their Process Group circle in ISO 15288 order
+    ONION_RING_GROUPS.forEach((ring, ringIdx) => {
+        const list = procsByGroup[ring.group] || [];
+        if (list.length === 0) return;
+
+        list.sort((a, b) => getProcessOrderIndex(a._rawName) - getProcessOrderIndex(b._rawName));
+        const startAngle = -Math.PI / 2 + (ringIdx % 2 === 1 ? Math.PI / Math.max(list.length, 4) : 0);
+
+        list.forEach((n, idx) => {
+            const angle = startAngle + (2 * Math.PI * idx) / list.length;
+            const x = ring.radius * Math.cos(angle);
+            const y = ring.radius * Math.sin(angle);
+            posById.set(n.id, { x, y });
+            angleById.set(n.id, angle);
+            radiusById.set(n.id, ring.radius);
         });
+    });
+
+    // 2. Group artefacts by their radial band based on connected processes
+    const connectedProcs = new Map();
+    edgesList.forEach((e) => {
+        if (radiusById.has(e.from) && !radiusById.has(e.to)) {
+            if (!connectedProcs.has(e.to)) connectedProcs.set(e.to, []);
+            connectedProcs.get(e.to).push(e.from);
+        } else if (radiusById.has(e.to) && !radiusById.has(e.from)) {
+            if (!connectedProcs.has(e.from)) connectedProcs.set(e.from, []);
+            connectedProcs.get(e.from).push(e.to);
+        }
+    });
+
+    // Bucket artefacts into concentric bands so they never collide on top of each other
+    const bands = new Map(); // bandRadius -> Array({ node, targetAngle })
+
+    artefacts.forEach((art, idx) => {
+        const peers = Array.from(new Set(connectedProcs.get(art.id) || []));
+        let targetRadius = 175;
+        let targetAngle = (2 * Math.PI * idx) / Math.max(artefacts.length, 1);
+
+        if (peers.length > 0) {
+            const peerRadii = peers.map((pId) => radiusById.get(pId));
+            const uniqueRadii = Array.from(new Set(peerRadii));
+            const minR = Math.min(...uniqueRadii);
+            const maxR = Math.max(...uniqueRadii);
+
+            // Circular mean angle of connected processes
+            let sinSum = 0;
+            let cosSum = 0;
+            peers.forEach((pId) => {
+                const a = angleById.get(pId);
+                sinSum += Math.sin(a);
+                cosSum += Math.cos(a);
+            });
+            targetAngle = Math.atan2(sinSum, cosSum);
+
+            if (uniqueRadii.length === 1) {
+                // Connected only to one process group:
+                // Technical-only artefacts go INSIDE the core circle!
+                if (minR === ringRadiusByGroup['Technical']) {
+                    targetRadius = 155;
+                } else {
+                    targetRadius = minR - 115;
+                }
+            } else {
+                // Cross-group exchange: sit cleanly between the connected rings
+                targetRadius = Math.round(((minR + maxR) / 2) / 30) * 30;
+            }
+        }
+
+        if (!bands.has(targetRadius)) bands.set(targetRadius, []);
+        bands.get(targetRadius).push({ node: art, targetAngle });
+    });
+
+    // Spread artefacts evenly within each radial band while preserving angular ordering
+    bands.forEach((items, bandR) => {
+        items.sort((a, b) => a.targetAngle - b.targetAngle);
+        const count = items.length;
+        const minAngularStep = Math.min((2 * Math.PI) / Math.max(count, 1), 110 / Math.max(bandR, 120));
+
+        // If band is dense, distribute evenly around the band (with gentle radial stagger)
+        if (count * minAngularStep > Math.PI * 1.65) {
+            items.forEach((entry, i) => {
+                const angle = -Math.PI / 2 + (2 * Math.PI * i) / count;
+                const r = bandR + (count > 14 ? ((i % 2) === 0 ? -24 : 24) : 0);
+                posById.set(entry.node.id, { x: r * Math.cos(angle), y: r * Math.sin(angle) });
+            });
+        } else {
+            // Keep close to targetAngle while nudging overlapping neighbours apart
+            let prevAngle = null;
+            items.forEach((entry, i) => {
+                let angle = entry.targetAngle;
+                if (prevAngle !== null && angle - prevAngle < minAngularStep) {
+                    angle = prevAngle + minAngularStep;
+                }
+                prevAngle = angle;
+                const r = bandR + ((i % 2) === 0 ? -10 : 10);
+                posById.set(entry.node.id, { x: r * Math.cos(angle), y: r * Math.sin(angle) });
+            });
+        }
+    });
+
+    return posById;
 };
 
-// --- RENDERERS ---
+// --- 2D RENDERERS ---
 const renderMermaid = async (payload, preserveView = false) => {
     let savedZoom = null;
     let savedPan = null;
@@ -799,6 +701,8 @@ const renderMermaid = async (payload, preserveView = false) => {
             panZoomInstance.center();
         }
 
+        rendered2DNodeIds.value = Array.from(payload.nodes);
+
         if (pinnedNodeIds.value.size > 0) {
             applyMermaidPinnedClasses();
         }
@@ -811,311 +715,240 @@ const renderVisJs = (payload) => {
     destroyRenderers();
     if (!visDiv.value) return;
     const gActive = graphData.gActive();
+    if (!gActive) return;
 
-    // Fold internal BusinessProcess activities inside their parent BusinessFunction card
-    // instead of drawing dangling Composition nodes.
+    const mode = effectiveVisScope.value;
+    const useRings = store.visOptions.useRings;
+    const sliceNodes = payload.nodes || new Set();
+    const sliceEdges = sliceEdgeKeySet.value;
+
+    // Fold internal BusinessProcess activities inside parent BusinessFunction cards in Slice mode
     const embeddedActivitiesByParent = new Map();
     const foldedChildIds = new Set();
 
-    payload.edges.forEach((e) => {
-        const eType = e.data?.type || '';
-        if (!eType.includes('Composition')) return;
-        const uType = gActive.getNodeAttribute(e.u, 'type') || '';
-        const vType = gActive.getNodeAttribute(e.v, 'type') || '';
-        if (uType.includes('BusinessFunction') && vType.includes('BusinessProcess')) {
-            if (!embeddedActivitiesByParent.has(e.u)) embeddedActivitiesByParent.set(e.u, []);
-            const childName = payload.customLabels[e.v] || gActive.getNodeAttribute(e.v, 'name') || 'Activity';
-            embeddedActivitiesByParent.get(e.u).push(childName);
-            foldedChildIds.add(e.v);
-        }
-    });
-
-    visBaseNodes = Array.from(payload.nodes)
-        .filter((id) => !foldedChildIds.has(id))
-        .map((id) => {
-            const type = gActive.getNodeAttribute(id, 'type') || '';
-            const isProc = type.includes('BusinessFunction') || type.includes('BusinessProcess');
-            const isHighlighted = payload.highlightedNodes && payload.highlightedNodes.has(id);
-            const baseName = payload.customLabels[id] || gActive.getNodeAttribute(id, 'name') || 'Unknown';
-
-            const embedded = embeddedActivitiesByParent.get(id);
-            let label = baseName;
-            let align = 'center';
-            let widthMax = 185;
-
-            if (embedded && embedded.length > 0) {
-                label = `${baseName}\n────────────────────\n` + embedded.map((a) => `• ${a}`).join('\n');
-                align = 'left';
-                widthMax = 260;
+    if (mode === 'slice') {
+        (payload.edges || []).forEach((e) => {
+            const eType = e.data?.type || '';
+            if (!eType.includes('Composition')) return;
+            const uType = gActive.getNodeAttribute(e.u, 'type') || '';
+            const vType = gActive.getNodeAttribute(e.v, 'type') || '';
+            if (uType.includes('BusinessFunction') && vType.includes('BusinessProcess')) {
+                if (!embeddedActivitiesByParent.has(e.u)) embeddedActivitiesByParent.set(e.u, []);
+                const childName = payload.customLabels?.[e.v] || gActive.getNodeAttribute(e.v, 'name') || 'Activity';
+                embeddedActivitiesByParent.get(e.u).push(childName);
+                foldedChildIds.add(e.v);
             }
-
-            return {
-                id,
-                label,
-                shape: isProc ? 'box' : 'ellipse',
-                widthConstraint: { maximum: widthMax },
-                color: isHighlighted || (embedded && embedded.length > 0)
-                    ? { background: '#FFE6CC', border: '#D79B00', highlight: { background: '#FFD9B3', border: '#B37F00' } }
-                    : (isProc
-                        ? { background: '#FFF2CC', border: '#D6B656', highlight: { background: '#FFE8A3', border: '#B89635' } }
-                        : { background: '#D5E8D4', border: '#82B366', highlight: { background: '#C0DFBE', border: '#5E8E45' } }),
-                font: {
-                    face: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
-                    size: isHighlighted ? 14 : 13,
-                    bold: isHighlighted,
-                    align,
-                    color: '#222222'
-                },
-                borderWidth: isHighlighted || (embedded && embedded.length > 0) ? 2.5 : 1.5,
-                margin: embedded && embedded.length > 0 ? 12 : 10,
-                opacity: 1
-            };
         });
-
-    visBaseEdges = payload.edges
-        .filter((e) => !foldedChildIds.has(e.u) && !foldedChildIds.has(e.v) && !(e.data?.type || '').includes('Composition'))
-        .map((e, idx) => {
-            const type = e.data.type || "";
-            const access = (e.data.access || "").toLowerCase();
-            const subclass = e.data.subclass || "";
-            let label = "", dashes = false;
-
-            if (type.includes('Access')) {
-                if (subclass === 'Controls') { label = "Controls"; dashes = true; }
-                else if (subclass === 'Enables') { label = "Enables"; dashes = true; }
-                else if (subclass === 'Situational') { label = access === 'read' ? "Situational Input" : "Situational Output"; dashes = true; }
-                else if (access === 'read') label = "Input";
-                else if (access === 'write') label = "Output";
-            } else {
-                label = type.replace("Relationship", "").replace("archimate:", "");
-                if (label === 'Specialization') dashes = true;
-            }
-
-            return {
-                id: `e_${idx}_${e.u}_${e.v}`,
-                from: e.u,
-                to: e.v,
-                label,
-                dashes,
-                width: 1.5,
-                arrows: 'to',
-                font: { size: 11, align: 'middle', strokeWidth: 3, strokeColor: '#ffffff', color: '#444444' },
-                color: { color: dashes ? '#999999' : '#666666', highlight: '#222222' }
-            };
-        });
-
-    visNetworkInstance = new Network(visDiv.value, { nodes: [...visBaseNodes], edges: [...visBaseEdges] }, {
-        edges: {
-            smooth: { enabled: true, type: 'dynamic' }
-        },
-        interaction: {
-            hover: true
-        },
-        physics: {
-            enabled: true,
-            solver: 'forceAtlas2Based',
-            forceAtlas2Based: {
-                gravitationalConstant: -105,
-                centralGravity: 0.01,
-                springLength: 175,
-                springConstant: 0.055,
-                avoidOverlap: 0.8
-            },
-            stabilization: {
-                iterations: 220
-            }
-        }
-    });
-
-    visNetworkInstance.once('stabilizationIterationsDone', () => {
-        visNetworkInstance?.fit({ animation: { duration: 400, easingFunction: 'easeInOutQuad' } });
-    });
-
-    visNetworkInstance.on("click", function (params) {
-        if (params.nodes.length > 0) showNodeInfo(params.nodes[0]);
-        else selectedNodeInfo.value = null;
-    });
-
-    if (currentStepState.value || searchMatchSet.value !== null || pinnedNodeIds.value.size > 0) {
-        applyVisVisualState();
     }
-};
 
-const render3D = (payload) => {
-    destroyRenderers();
-    if (!threeDiv.value) return;
-    threeDiv.value.innerHTML = '';
-    const gActive = graphData.gActive();
-    const layered = store.threeOptions.isLayered;
+    const candidateNodeIds = mode === 'slice'
+        ? Array.from(sliceNodes)
+        : gActive.nodes();
 
-    // Exclude internal BusinessProcess activities from 3D scene (shown in Info Panel on click instead)
-    const excluded3DIds = new Set();
-    Array.from(payload.nodes).forEach((id) => {
+    const includedIds = new Set();
+    const rawNodes = [];
+
+    candidateNodeIds.forEach((id) => {
+        if (!gActive.hasNode(id) || foldedChildIds.has(id) || includedIds.has(id)) return;
         const type = gActive.getNodeAttribute(id, 'type') || '';
-        if (type.includes('BusinessProcess')) {
-            excluded3DIds.add(id);
+        // Skip internal BusinessProcess activities in Full/Context or Ring views
+        if (type.includes('BusinessProcess')) return;
+
+        const rawName = gActive.getNodeAttribute(id, 'name') || 'Unknown';
+        const isProc = type.includes('BusinessFunction');
+        const group = isProc ? getProcessGroup(rawName) : 'Business Objects';
+
+        // Exclude Tailoring when Onion Rings layout is active (per design)
+        if (useRings && isProc && group === 'Tailoring') return;
+
+        const inSlice = sliceNodes.has(id);
+        const isHighlighted = mode !== 'full' && payload.highlightedNodes && payload.highlightedNodes.has(id);
+        const baseName = (inSlice && payload.customLabels?.[id]) || rawName;
+
+        const embedded = (!useRings && mode === 'slice') ? embeddedActivitiesByParent.get(id) : null;
+        let label = baseName;
+        let align = 'center';
+        let widthMax = useRings ? (isProc ? 165 : 135) : 185;
+
+        if (embedded && embedded.length > 0) {
+            label = `${baseName}\n────────────────────\n` + embedded.map((a) => `• ${a}`).join('\n');
+            align = 'left';
+            widthMax = 260;
         }
+
+        const groupBorder = isProc ? (groupColors[group] || '#D6B656') : '#82B366';
+
+        rawNodes.push({
+            id,
+            label,
+            shape: isProc ? 'box' : 'ellipse',
+            widthConstraint: { maximum: widthMax },
+            color: isHighlighted || (embedded && embedded.length > 0)
+                ? { background: '#FFE6CC', border: '#D79B00', highlight: { background: '#FFD9B3', border: '#B37F00' } }
+                : (isProc
+                    ? { background: '#FFF8E1', border: useRings ? groupBorder : '#D6B656', highlight: { background: '#FFE8A3', border: '#B89635' } }
+                    : { background: '#E8F5E9', border: '#82B366', highlight: { background: '#C8E6C9', border: '#5E8E45' } }),
+            font: {
+                face: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
+                size: useRings ? (isProc ? 12 : 10.5) : (isHighlighted ? 14 : 13),
+                bold: isHighlighted || (useRings && isProc),
+                align,
+                color: '#222222'
+            },
+            borderWidth: isHighlighted || (embedded && embedded.length > 0) ? 2.5 : (useRings && isProc ? 2 : 1.5),
+            margin: embedded && embedded.length > 0 ? 12 : (useRings ? 7 : 10),
+            opacity: 1,
+            _isProc: isProc,
+            _group: group,
+            _rawName: rawName,
+            _inSlice: inSlice
+        });
+        includedIds.add(id);
     });
 
-    const nodes = Array.from(payload.nodes)
-        .filter((id) => !excluded3DIds.has(id))
-        .map(id => {
-            const type = gActive.getNodeAttribute(id, 'type') || '';
-            const isProc = type.includes('BusinessFunction');
-            const isHighlighted = payload.highlightedNodes && payload.highlightedNodes.has(id);
-            const name = payload.customLabels[id] || gActive.getNodeAttribute(id, 'name') || 'Unknown';
-            const group = isProc ? getProcessGroup(name) : 'Business Objects';
+    const rawEdges = [];
+    const seenEdgeKeys = new Set();
 
-            const nodeObj = {
-                id,
-                name,
-                group,
-                isProc,
-                isHighlighted,
-                val: isHighlighted ? 12 : (isProc ? 6 : 3),
-                color: isHighlighted ? '#D79B00' : (isProc ? '#D6B656' : '#82B366')
-            };
+    const addEdge = (u, v, data, idx) => {
+        if (!includedIds.has(u) || !includedIds.has(v)) return;
+        if (data?.access === 'hierarchy_reverse' || (data?.type || '').includes('Composition')) return;
+        const key = `${u}___${v}`;
+        if (seenEdgeKeys.has(key)) return;
+        seenEdgeKeys.add(key);
 
-            if (layered && isProc) {
-                nodeObj.fy = groupLayerY[group] ?? -170;
-            }
-
-            return nodeObj;
-        });
-
-    const filteredEdges = payload.edges.filter(
-        (e) => !excluded3DIds.has(e.u) && !excluded3DIds.has(e.v) && !(e.data?.type || '').includes('Composition')
-    );
-
-    const nodeById = new Map(nodes.map((n) => [n.id, n]));
-
-    if (layered) {
-        const neighbourProcessYs = new Map();
-        filteredEdges.forEach((e) => {
-            const nU = nodeById.get(e.u);
-            const nV = nodeById.get(e.v);
-            if (!nU || !nV) return;
-            if (nU.isProc && !nV.isProc) {
-                if (!neighbourProcessYs.has(nV.id)) neighbourProcessYs.set(nV.id, []);
-                neighbourProcessYs.get(nV.id).push(nU.fy);
-            } else if (!nU.isProc && nV.isProc) {
-                if (!neighbourProcessYs.has(nU.id)) neighbourProcessYs.set(nU.id, []);
-                neighbourProcessYs.get(nU.id).push(nV.fy);
-            }
-        });
-
-        let artIdx = 0;
-        nodes.forEach((n) => {
-            if (n.isProc) return;
-            const ys = neighbourProcessYs.get(n.id);
-            if (ys && ys.length > 0) {
-                const uniqueYs = Array.from(new Set(ys));
-                const avgY = ys.reduce((a, b) => a + b, 0) / ys.length;
-                if (uniqueYs.length === 1) {
-                    const offset = uniqueYs[0] >= 180 ? -30 : 30;
-                    n.fy = uniqueYs[0] + offset;
-                } else {
-                    const stagger = ((artIdx % 3) - 1) * 7;
-                    n.fy = avgY + stagger;
-                }
-            }
-            artIdx++;
-        });
-    }
-
-    const layerCounts = {};
-    nodes.forEach((n) => {
-        if (n.isProc) layerCounts[n.group] = (layerCounts[n.group] || 0) + 1;
-    });
-    const maxInLayer = Math.max(1, ...Object.values(layerCounts));
-    const planeSize = Math.max(460, Math.min(760, 320 + maxInLayer * 34));
-
-    const links = filteredEdges.map(e => {
-        const type = e.data.type || '';
-        const subclass = e.data.subclass || '';
-        const access = (e.data.access || '').toLowerCase();
-        const isSystemic = ['Controls', 'Enables', 'Situational'].includes(subclass) || type.includes('Specialization');
-
+        const type = data?.type || '';
+        const access = (data?.access || '').toLowerCase();
+        const subclass = data?.subclass || '';
         let label = '';
+        let dashes = false;
+
         if (type.includes('Access')) {
-            if (subclass === 'Controls') label = 'Controls';
-            else if (subclass === 'Enables') label = 'Enables';
-            else if (subclass === 'Situational') label = access === 'read' ? 'Situational Input' : 'Situational Output';
+            if (subclass === 'Controls') { label = 'Controls'; dashes = true; }
+            else if (subclass === 'Enables') { label = 'Enables'; dashes = true; }
+            else if (subclass === 'Situational') { label = access === 'read' ? 'Situational Input' : 'Situational Output'; dashes = true; }
             else if (access === 'read') label = 'Input';
             else if (access === 'write') label = 'Output';
         } else {
             label = type.replace('Relationship', '').replace('archimate:', '');
+            if (label === 'Specialization') dashes = true;
         }
 
-        return {
-            source: e.u,
-            target: e.v,
-            name: label,
-            isSystemic
-        };
-    });
-
-    let hasFitted = false;
-
-    threeGraphInstance = ForceGraph3D()(threeDiv.value)
-        .width(threeDiv.value.clientWidth)
-        .height(threeDiv.value.clientHeight)
-        .graphData({ nodes, links })
-        .backgroundColor('#f8f9fb')
-        .nodeRelSize(3)
-        .nodeColor('color')
-        .nodeVal('val')
-        .nodeLabel(node => `${node.name} (${node.group})`)
-        .nodeThreeObjectExtend(true)
-        .nodeThreeObject(node => (store.threeOptions.showLabels ? createTextSprite(node) : null))
-        .linkLabel('name')
-        .linkColor(link => (link.isSystemic ? '#b0b8c1' : '#7a869a'))
-        .linkWidth(link => (link.isSystemic ? 0.8 : 1.4))
-        .linkDirectionalArrowLength(4)
-        .linkDirectionalArrowRelPos(1)
-        .linkDirectionalParticles(link => (link.isSystemic ? 1 : 2))
-        .linkDirectionalParticleWidth(1.8)
-        .linkDirectionalParticleSpeed(0.005)
-        .linkDirectionalParticleColor(link => (link.isSystemic ? '#9aa5b1' : '#4CAF50'))
-        .onNodeClick(node => showNodeInfo(node.id))
-        .onBackgroundClick(() => { selectedNodeInfo.value = null; })
-        .onEngineStop(() => {
-            if (!hasFitted && threeGraphInstance) {
-                hasFitted = true;
-                if (layered) {
-                    const camDist = planeSize * 0.95;
-                    threeGraphInstance.cameraPosition({ x: camDist * 0.72, y: 200, z: camDist * 0.9 }, { x: 0, y: 0, z: 0 }, 700);
-                } else {
-                    threeGraphInstance.zoomToFit(600, 60);
-                }
-            }
+        rawEdges.push({
+            id: `e_${idx}_${u}_${v}`,
+            from: u,
+            to: v,
+            label: mode === 'full' ? '' : label,
+            dashes,
+            width: mode === 'full' ? 0.9 : 1.5,
+            arrows: { to: { enabled: true, scaleFactor: mode === 'full' ? 0.55 : 0.8 } },
+            font: { size: 10.5, align: 'middle', strokeWidth: 3, strokeColor: '#ffffff', color: '#444444' },
+            color: { color: dashes ? '#999999' : (mode === 'full' ? 'rgba(100,116,139,0.45)' : '#666666'), highlight: '#222222' },
+            _inSlice: sliceEdges.has(key)
         });
+    };
 
-    const linkForce = threeGraphInstance.d3Force('link');
-    if (linkForce) linkForce.distance(layered ? 95 : 110);
-    const chargeForce = threeGraphInstance.d3Force('charge');
-    if (chargeForce) chargeForce.strength(layered ? -260 : -360);
+    if (mode === 'slice') {
+        (payload.edges || []).forEach((e, idx) => addEdge(e.u, e.v, e.data, idx));
+    } else {
+        let idx = 0;
+        gActive.forEachEdge((edge, attr, u, v) => addEdge(u, v, attr, idx++));
+    }
 
-    if (layered) {
-        const limit = planeSize / 2 - 28;
-        threeGraphInstance.d3Force('planeBounds', () => {
-            nodes.forEach((n) => {
-                if (typeof n.x === 'number') {
-                    if (n.x > limit) { n.x = limit; n.vx = 0; }
-                    else if (n.x < -limit) { n.x = -limit; n.vx = 0; }
+    // Apply deterministic concentric coordinates when Process Groups (Rings) is enabled
+    const activeRingGroups = new Set();
+    if (useRings) {
+        const positions = computeOnionPositions(rawNodes, rawEdges);
+        rawNodes.forEach((n) => {
+            const p = positions.get(n.id);
+            if (p) {
+                n.x = p.x;
+                n.y = p.y;
+            }
+            if (n._isProc) activeRingGroups.add(n._group);
+        });
+    }
+
+    visBaseNodes = rawNodes;
+    visBaseEdges = rawEdges;
+    rendered2DNodeIds.value = Array.from(includedIds);
+
+    visNetworkInstance = new Network(
+        visDiv.value,
+        { nodes: [...visBaseNodes], edges: [...visBaseEdges] },
+        {
+            edges: {
+                smooth: useRings
+                    ? { enabled: true, type: 'continuous', roundness: 0.25 }
+                    : { enabled: true, type: 'dynamic' }
+            },
+            interaction: {
+                hover: true
+            },
+            physics: useRings
+                ? { enabled: false }
+                : {
+                    enabled: true,
+                    solver: 'forceAtlas2Based',
+                    forceAtlas2Based: {
+                        gravitationalConstant: mode === 'full' ? -130 : -105,
+                        centralGravity: 0.01,
+                        springLength: mode === 'full' ? 210 : 175,
+                        springConstant: 0.055,
+                        avoidOverlap: 0.8
+                    },
+                    stabilization: {
+                        iterations: mode === 'full' ? 260 : 220
+                    }
                 }
-                if (typeof n.z === 'number') {
-                    if (n.z > limit) { n.z = limit; n.vz = 0; }
-                    else if (n.z < -limit) { n.z = -limit; n.vz = 0; }
-                }
+        }
+    );
+
+    // Draw concentric Process Group rings on the Vis.js background canvas
+    if (useRings) {
+        const ringsToDraw = ONION_RING_GROUPS.filter((r) => activeRingGroups.has(r.group));
+        visNetworkInstance.on('beforeDrawing', (ctx) => {
+            // Draw from outermost to innermost so subtle fills layer cleanly
+            [...ringsToDraw].reverse().forEach((ring) => {
+                ctx.save();
+                ctx.beginPath();
+                ctx.arc(0, 0, ring.radius, 0, Math.PI * 2);
+                ctx.fillStyle = ring.fill;
+                ctx.fill();
+                ctx.setLineDash([8, 6]);
+                ctx.lineWidth = 2;
+                ctx.strokeStyle = ring.stroke;
+                ctx.stroke();
+
+                // Ring label at top (12 o'clock)
+                ctx.setLineDash([]);
+                ctx.font = 'bold 16px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'middle';
+                const labelY = -ring.radius - 16;
+                const textW = ctx.measureText(ring.label).width;
+                ctx.fillStyle = 'rgba(255, 255, 255, 0.88)';
+                ctx.fillRect(-textW / 2 - 8, labelY - 11, textW + 16, 22);
+                ctx.fillStyle = groupColors[ring.group] || '#475569';
+                ctx.fillText(ring.label, 0, labelY);
+                ctx.restore();
             });
         });
-        add3DLayerPlanes(nodes, planeSize);
+
+        setTimeout(() => {
+            visNetworkInstance?.fit({ animation: { duration: 400, easingFunction: 'easeInOutQuad' } });
+        }, 50);
+    } else {
+        visNetworkInstance.once('stabilizationIterationsDone', () => {
+            visNetworkInstance?.fit({ animation: { duration: 400, easingFunction: 'easeInOutQuad' } });
+        });
     }
 
-    if (currentStepState.value || searchMatchSet.value !== null || pinnedNodeIds.value.size > 0) {
-        apply3DVisualState();
-    }
+    visNetworkInstance.on('click', (params) => {
+        if (params.nodes.length > 0) showNodeInfo(params.nodes[0]);
+        else selectedNodeInfo.value = null;
+    });
+
+    applyVisVisualState();
 };
 
 // --- VIEW CONTROLS ---
@@ -1126,12 +959,6 @@ const fitView = () => {
         panZoomInstance.center();
     } else if (store.activeEngine === 'visjs' && visNetworkInstance) {
         visNetworkInstance.fit({ animation: { duration: 400, easingFunction: 'easeInOutQuad' } });
-    } else if (store.activeEngine === '3d' && threeGraphInstance) {
-        if (store.threeOptions.isLayered) {
-            threeGraphInstance.cameraPosition({ x: 380, y: 210, z: 480 }, { x: 0, y: 0, z: 0 }, 600);
-        } else {
-            threeGraphInstance.zoomToFit(500, 60);
-        }
     }
 };
 
@@ -1143,10 +970,20 @@ const toggleSummaryDrawer = () => {
     }
 };
 
-// Re-render graph when payload, graph engine, or active workspace view changes
+// Re-render 2D graph when payload, 2D engine, Vis options, global settings, or active view changes
 watch(
-    () => [store.renderPayload, store.activeEngine, store.activeView],
-    async ([newPayload, engine, view]) => {
+    () => [
+        store.renderPayload,
+        store.activeEngine,
+        store.activeView,
+        store.visOptions.scope,
+        store.visOptions.useRings,
+        store.settings.useHierarchy,
+        store.settings.includeEnables,
+        store.settings.includeControls,
+        store.settings.includeSituational
+    ],
+    async () => {
         selectedNodeInfo.value = null;
         stopAutoPlay();
         stepperActive.value = false;
@@ -1154,19 +991,21 @@ watch(
         searchQuery.value = '';
         searchFocusIdx.value = 0;
         pinnedNodeIds.value = new Set();
-        showSummaryDrawer.value = Boolean(newPayload?.analysisSummary);
+        showSummaryDrawer.value =
+            store.activeView === 'graph' &&
+            Boolean(store.renderPayload?.analysisSummary) &&
+            !(store.activeEngine === 'visjs' && effectiveVisScope.value === 'full');
         isSummaryCollapsed.value = false;
 
-        if (view !== 'graph' || !newPayload || newPayload.nodes.size === 0) {
+        if (store.activeView !== 'graph' || !store.isLoaded || !show2DCanvas.value) {
             destroyRenderers();
             return;
         }
 
         errorContent.value = '';
         await nextTick();
-        if (engine === 'mermaid') await renderMermaid(newPayload, false);
-        else if (engine === 'visjs') renderVisJs(newPayload);
-        else if (engine === '3d') render3D(newPayload);
+        if (store.activeEngine === 'visjs') renderVisJs(store.renderPayload);
+        else await renderMermaid(store.renderPayload, false);
     },
     { deep: true }
 );
@@ -1174,28 +1013,15 @@ watch(
 // React to step or search changes without resetting layout
 watch([stepperActive, currentStepIdx, searchQuery], async () => {
     searchFocusIdx.value = 0;
-    if (store.activeView !== 'graph' || store.renderPayload.nodes.size === 0) return;
+    if (store.activeView !== 'graph' || !show2DCanvas.value) return;
     if (store.activeEngine === 'mermaid') {
         await renderMermaid(store.renderPayload, true);
     } else if (store.activeEngine === 'visjs') {
         applyVisVisualState();
-    } else if (store.activeEngine === '3d') {
-        apply3DVisualState();
     }
 });
 
-// Re-render 3D when 3D view options change
-watch(
-    () => [store.threeOptions.showLabels, store.threeOptions.isLayered],
-    async () => {
-        if (store.activeView === 'graph' && store.activeEngine === '3d' && store.renderPayload.nodes.size > 0) {
-            await nextTick();
-            render3D(store.renderPayload);
-        }
-    }
-);
-
-// --- UNIVERSAL PNG EXPORT ---
+// --- PNG EXPORT ---
 const exportImage = () => {
     if (store.activeEngine === 'mermaid') {
         const svg = mermaidDiv.value?.querySelector('svg');
@@ -1242,31 +1068,16 @@ const exportImage = () => {
         const canvas = visDiv.value?.querySelector('canvas');
         if (canvas) {
             const a = document.createElement("a");
-            a.download = "Diagram_Vis.png";
+            a.download = `Diagram_Vis_${store.visOptions.useRings ? 'Rings' : 'Free'}.png`;
             a.href = canvas.toDataURL("image/png");
             a.click();
-        }
-    } else if (store.activeEngine === '3d') {
-        if (threeGraphInstance) {
-            threeGraphInstance.renderer().render(threeGraphInstance.scene(), threeGraphInstance.camera());
-            const canvas = threeDiv.value?.querySelector('canvas');
-            if (canvas) {
-                const a = document.createElement("a");
-                a.download = "Diagram_3D.png";
-                a.href = canvas.toDataURL("image/png");
-                a.click();
-            }
         }
     }
 };
 
-// Synchronise active renderer dimensions whenever window resizes or sidebar collapses/expands
 const syncRendererSize = () => {
     if (store.activeView !== 'graph') return;
-    if (store.activeEngine === '3d' && threeGraphInstance && threeDiv.value) {
-        threeGraphInstance.width(threeDiv.value.clientWidth);
-        threeGraphInstance.height(threeDiv.value.clientHeight);
-    } else if (store.activeEngine === 'mermaid' && panZoomInstance) {
+    if (store.activeEngine === 'mermaid' && panZoomInstance) {
         panZoomInstance.resize();
     } else if (store.activeEngine === 'visjs' && visNetworkInstance) {
         visNetworkInstance.setSize('100%', '100%');
@@ -1317,23 +1128,31 @@ onUnmounted(() => {
         <button class="upload-btn" @click="fileInput.click()">📁 Choose File</button>
     </div>
 
-    <!-- Whole-Model Workspaces -->
-    <FullModel3D v-else-if="store.activeView === 'model3d'" />
+    <!-- Other Projections & Reference Views -->
+    <Space3D v-else-if="store.activeView === 'space3d'" />
     <N2Matrix v-else-if="store.activeView === 'n2'" />
     <InsightsView v-else-if="['checklist', 'hotspots', 'dictionary'].includes(store.activeView)" />
 
-    <!-- Scenario Graph: Empty State -->
-    <div v-else-if="store.renderPayload.nodes.size === 0" class="empty-state">
+    <!-- 2D Diagram: Empty State (with quick jump to Vis.js Concentric Full Model) -->
+    <div v-else-if="!show2DCanvas" class="empty-state">
         <div class="empty-icon">📐</div>
         <h3>{{ store.modelName }} Ready</h3>
-        <p>Configure a scenario in the left sidebar and click <strong>"Generate Diagram"</strong>, or explore the full model using the tabs above.</p>
+        <p>Configure an analysis slice in the left sidebar and click <strong>"Apply Slice / Generate"</strong> — or open the full model in <strong>2D Concentric Rings</strong>, <strong>3D Space</strong>, or <strong>N2 Matrix</strong>.</p>
         <div class="model-quick-stats">
           <span class="stat-pill">Processes: <strong>{{ Object.keys(store.processes).length }}</strong></span>
           <span class="stat-pill">Business Objects: <strong>{{ Object.keys(store.businessObjects).length }}</strong></span>
         </div>
+        <div class="empty-actions">
+          <button
+            class="quick-rings-btn"
+            @click="store.activeEngine = 'visjs'; store.visOptions.scope = 'full'; store.visOptions.useRings = true;"
+          >
+            ◎ Open Full Model in 2D Rings
+          </button>
+        </div>
     </div>
 
-    <!-- Scenario Graph: Render Targets -->
+    <!-- 2D Diagram: Render Targets -->
     <template v-else>
       <div
         v-if="store.activeEngine === 'mermaid'"
@@ -1342,21 +1161,63 @@ onUnmounted(() => {
         @click="handleMermaidBackgroundClick"
       ></div>
       <div v-if="store.activeEngine === 'visjs'" ref="visDiv" class="render-div"></div>
-      <div v-if="store.activeEngine === '3d'" ref="threeDiv" class="render-div"></div>
 
-      <!-- Floating Canvas Controls + In-Canvas Search -->
+      <!-- Floating 2D Canvas Controls -->
       <div class="canvas-toolbar">
+          <!-- 2D Engine Switcher: Mermaid | Vis.js -->
+          <div class="engine-switch" title="Switch 2D layout engine">
+              <button
+                :class="['engine-btn', { active: store.activeEngine === 'mermaid' }]"
+                :disabled="!hasSlice"
+                @click="store.activeEngine = 'mermaid'"
+              >
+                Mermaid
+              </button>
+              <button
+                :class="['engine-btn', { active: store.activeEngine === 'visjs' }]"
+                @click="store.activeEngine = 'visjs'"
+              >
+                Vis.js
+              </button>
+          </div>
+
+          <!-- Scope Switcher for Vis.js (Slice Only | In Context | Full Model) -->
+          <div v-if="store.activeEngine === 'visjs'" class="engine-switch" title="Choose 2D Vis.js scope">
+              <button
+                :class="['engine-btn', { active: effectiveVisScope === 'slice' }]"
+                :disabled="!hasSlice"
+                @click="store.visOptions.scope = 'slice'"
+              >
+                Slice
+              </button>
+              <button
+                :class="['engine-btn', { active: effectiveVisScope === 'context' }]"
+                :disabled="!hasSlice"
+                @click="store.visOptions.scope = 'context'"
+              >
+                In Context
+              </button>
+              <button
+                :class="['engine-btn', { active: effectiveVisScope === 'full' }]"
+                @click="store.visOptions.scope = 'full'"
+              >
+                Full Model
+              </button>
+          </div>
+
           <button class="toolbar-btn" @click="fitView" title="Fit diagram to viewport">🎯 Fit View</button>
+
           <button
-            v-if="store.renderPayload.edges.length > 0"
+            v-if="hasSlice && !(store.activeEngine === 'visjs' && effectiveVisScope === 'full') && store.renderPayload.edges.length > 0"
             :class="['toolbar-btn', { active: stepperActive }]"
             @click="toggleStepper"
             title="Step through data flow wave by wave"
           >
             {{ stepperActive ? '⏹ Exit Stepper' : '▶ Step Flow' }}
           </button>
+
           <button
-            v-if="store.renderPayload.analysisSummary"
+            v-if="hasSlice && !(store.activeEngine === 'visjs' && effectiveVisScope === 'full') && store.renderPayload.analysisSummary"
             :class="['toolbar-btn', { active: showSummaryDrawer }]"
             @click="toggleSummaryDrawer"
             title="Toggle audit / impact summary report"
@@ -1395,16 +1256,15 @@ onUnmounted(() => {
               </button>
           </div>
 
-          <template v-if="store.activeEngine === '3d'">
-              <label class="toolbar-toggle">
-                  <input type="checkbox" v-model="store.threeOptions.showLabels" />
-                  Labels
-              </label>
-              <label class="toolbar-toggle" title="Organise processes onto ISO 15288 Process Group planes">
-                  <input type="checkbox" v-model="store.threeOptions.isLayered" />
-                  Process Groups
-              </label>
-          </template>
+          <!-- 2D Concentric Rings toggle (Vis.js) -->
+          <label
+            v-if="store.activeEngine === 'visjs'"
+            class="toolbar-toggle"
+            title="Arrange ISO 15288 Process Groups on concentric rings (Technical at centre, External on outer ring; Tailoring excluded)"
+          >
+              <input type="checkbox" v-model="store.visOptions.useRings" />
+              Process Groups (Rings)
+          </label>
       </div>
 
       <!-- Step-by-Step Flow Player Bar -->
@@ -1441,18 +1301,10 @@ onUnmounted(() => {
                     class="summary-icon-btn"
                     @click="isSummaryCollapsed = !isSummaryCollapsed"
                     :title="isSummaryCollapsed ? 'Expand report' : 'Collapse report to header'"
-                    :aria-label="isSummaryCollapsed ? 'Expand report' : 'Collapse report'"
                   >
                     {{ isSummaryCollapsed ? '＋' : '−' }}
                   </button>
-                  <button
-                    class="summary-icon-btn"
-                    @click="showSummaryDrawer = false"
-                    title="Close report"
-                    aria-label="Close"
-                  >
-                    &times;
-                  </button>
+                  <button class="summary-icon-btn" @click="showSummaryDrawer = false" title="Close report">&times;</button>
               </div>
           </div>
 
@@ -1516,7 +1368,7 @@ onUnmounted(() => {
           </div>
       </div>
 
-      <!-- Info Panel (Node details + Internal Activities for processes) -->
+      <!-- Info Panel -->
       <div v-if="selectedNodeInfo" class="info-panel">
           <button class="info-close-btn" @click="selectedNodeInfo = null" aria-label="Close">&times;</button>
           <span class="info-group-tag">{{ selectedNodeInfo.group }}</span>
@@ -1585,6 +1437,27 @@ onUnmounted(() => {
     padding: 6px 10px; box-shadow: 0 3px 8px rgba(0, 0, 0, 0.08);
     backdrop-filter: blur(4px);
 }
+
+.engine-switch {
+    display: inline-flex;
+    border: 1px solid #cbd5e1;
+    border-radius: 6px;
+    overflow: hidden;
+}
+.engine-btn {
+    border: none;
+    background: #f8fafc;
+    padding: 5px 10px;
+    font-size: 11.5px;
+    font-weight: 600;
+    color: #475569;
+    cursor: pointer;
+    transition: background 0.15s, color 0.15s;
+}
+.engine-btn:not(:last-child) { border-right: 1px solid #e2e8f0; }
+.engine-btn.active { background: #4CAF50; color: #ffffff; }
+.engine-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
 .toolbar-btn {
     background: #ffffff; border: 1px solid #ccc; border-radius: 6px;
     padding: 5px 10px; font-size: 12px; font-weight: 600; color: #333;
@@ -1619,9 +1492,7 @@ onUnmounted(() => {
     font-size: 10px; font-weight: 700; padding: 1px 6px; border-radius: 10px;
     background: #FFF3CD; color: #BF360C; border: 1px solid #FFCC80;
 }
-.search-badge.zero {
-    background: #f1f5f9; color: #94a3b8; border-color: #e2e8f0;
-}
+.search-badge.zero { background: #f1f5f9; color: #94a3b8; border-color: #e2e8f0; }
 .search-action-btn, .search-clear-btn {
     border: none; background: none; cursor: pointer;
     font-size: 13px; color: #64748b; padding: 0 3px; line-height: 1;
@@ -1637,9 +1508,7 @@ onUnmounted(() => {
     box-shadow: 0 6px 20px rgba(21, 101, 192, 0.18);
     padding: 10px 16px; display: flex; flex-direction: column; gap: 6px;
 }
-.stepper-controls {
-    display: flex; align-items: center; justify-content: center; gap: 8px;
-}
+.stepper-controls { display: flex; align-items: center; justify-content: center; gap: 8px; }
 .step-btn {
     width: 30px; height: 28px; border-radius: 6px;
     border: 1px solid #cbd5e1; background: #f8fafc;
@@ -1649,78 +1518,42 @@ onUnmounted(() => {
 .step-btn:disabled { opacity: 0.4; cursor: not-allowed; }
 .step-btn.play-btn { background: #1565C0; color: #ffffff; border-color: #1565C0; }
 .step-btn.play-btn:hover { background: #0D47A1; }
-.step-counter {
-    font-size: 12px; font-weight: 700; color: #1565C0; margin-left: 6px;
-}
-.step-summary {
-    font-size: 12px; color: #334155; text-align: center;
-    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-}
+.step-counter { font-size: 12px; font-weight: 700; color: #1565C0; margin-left: 6px; }
+.step-summary { font-size: 12px; color: #334155; text-align: center; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
-/* Analysis Summary Drawer (Collapsible to Header) */
+/* Analysis Summary Drawer */
 .summary-panel {
     position: absolute; top: 14px; right: 16px; width: 350px; max-height: calc(100% - 96px);
     background: rgba(255, 255, 255, 0.97); border: 1px solid #d0d7de; border-radius: 8px;
     box-shadow: 0 10px 25px rgba(0, 0, 0, 0.14);
     display: flex; flex-direction: column; overflow: hidden; z-index: 950;
 }
-.summary-panel.collapsed {
-    width: auto; min-width: 245px; max-width: 350px;
-    box-shadow: 0 3px 10px rgba(0, 0, 0, 0.1);
-}
+.summary-panel.collapsed { width: auto; min-width: 245px; max-width: 350px; box-shadow: 0 3px 10px rgba(0, 0, 0, 0.1); }
 .summary-header {
-    flex-shrink: 0;
-    display: flex; justify-content: space-between; align-items: center; gap: 10px;
-    padding: 10px 12px 10px 14px;
-    background: #f8fafc; border-bottom: 1px solid #e2e8f0;
+    flex-shrink: 0; display: flex; justify-content: space-between; align-items: center; gap: 10px;
+    padding: 10px 12px 10px 14px; background: #f8fafc; border-bottom: 1px solid #e2e8f0;
     cursor: pointer; user-select: none;
 }
-.summary-panel.collapsed .summary-header {
-    border-bottom: none;
-}
-.summary-header:hover {
-    background: #f1f5f9;
-}
-.summary-header-title {
-    display: flex; align-items: center; gap: 7px; min-width: 0;
-}
-.summary-chevron {
-    font-size: 10px; color: #64748b; flex-shrink: 0;
-}
-.summary-header h3 {
-    margin: 0; font-size: 14px; color: #1e293b;
-    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-}
+.summary-panel.collapsed .summary-header { border-bottom: none; }
+.summary-header:hover { background: #f1f5f9; }
+.summary-header-title { display: flex; align-items: center; gap: 7px; min-width: 0; }
+.summary-chevron { font-size: 10px; color: #64748b; flex-shrink: 0; }
+.summary-header h3 { margin: 0; font-size: 14px; color: #1e293b; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .collapsed-pin-badge {
     font-size: 10px; font-weight: 700; padding: 1px 6px; border-radius: 10px;
     background: #FCE4EC; color: #AD1457; border: 1px solid #F48FB1; flex-shrink: 0;
 }
-.summary-header-actions {
-    display: flex; align-items: center; gap: 4px; flex-shrink: 0;
-}
+.summary-header-actions { display: flex; align-items: center; gap: 4px; flex-shrink: 0; }
 .summary-icon-btn {
-    width: 26px; height: 26px; border-radius: 5px;
-    border: none; background: transparent; color: #64748b;
-    font-size: 17px; line-height: 1; cursor: pointer;
+    width: 26px; height: 26px; border-radius: 5px; border: none; background: transparent;
+    color: #64748b; font-size: 17px; line-height: 1; cursor: pointer;
     display: flex; align-items: center; justify-content: center;
-    transition: background 0.15s, color 0.15s;
 }
-.summary-icon-btn:hover {
-    background: #e2e8f0; color: #0f172a;
-}
-
-.summary-body {
-    flex: 1 1 auto;
-    min-height: 0;
-    overflow-y: auto;
-    padding: 12px 16px 16px 16px;
-}
+.summary-icon-btn:hover { background: #e2e8f0; color: #0f172a; }
+.summary-body { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 12px 16px 16px 16px; }
 .summary-sub { margin: 0 0 12px 0; font-size: 12px; color: #64748b; }
 .summary-metrics { display: flex; gap: 8px; margin-bottom: 12px; }
-.metric-box {
-    flex: 1; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 6px;
-    padding: 8px; text-align: center; display: flex; flex-direction: column;
-}
+.metric-box { flex: 1; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 6px; padding: 8px; text-align: center; display: flex; flex-direction: column; }
 .metric-val { font-size: 18px; font-weight: 700; color: #1e293b; }
 .metric-lbl { font-size: 10px; color: #64748b; text-transform: uppercase; font-weight: 600; }
 
@@ -1730,18 +1563,10 @@ onUnmounted(() => {
     padding: 5px 10px; border-radius: 6px; font-size: 11.5px; font-weight: 600;
     margin-bottom: 12px; transition: background 0.15s, border-color 0.15s, color 0.15s;
 }
-.pinned-bar.empty {
-    background: #f8fafc; border-color: #e2e8f0; color: #94a3b8;
-}
-.clear-pins-btn {
-    border: none; background: #ffffff; color: #AD1457;
-    border-radius: 4px; padding: 2px 7px; font-size: 11px; font-weight: 700;
-    cursor: pointer; transition: opacity 0.15s, background 0.15s;
-}
+.pinned-bar.empty { background: #f8fafc; border-color: #e2e8f0; color: #94a3b8; }
+.clear-pins-btn { border: none; background: #ffffff; color: #AD1457; border-radius: 4px; padding: 2px 7px; font-size: 11px; font-weight: 700; cursor: pointer; }
 .clear-pins-btn:hover:not(:disabled) { background: #F8BBD0; }
-.clear-pins-btn:disabled {
-    background: #eef2f6; color: #94a3b8; cursor: default; opacity: 0.7;
-}
+.clear-pins-btn:disabled { background: #eef2f6; color: #94a3b8; cursor: default; opacity: 0.7; }
 
 .summary-section { margin-bottom: 12px; }
 .sec-title { margin: 0 0 6px 0; font-size: 12px; text-transform: uppercase; letter-spacing: 0.3px; }
@@ -1750,33 +1575,19 @@ onUnmounted(() => {
 .sec-title.ok { color: #2e7d32; }
 .summary-empty { font-size: 12px; color: #94a3b8; font-style: italic; }
 .summary-list { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 5px; }
-.summary-list li {
-    background: #f8fafc; border: 1px solid #edf2f7; border-radius: 5px;
-    padding: 6px 8px; transition: background 0.15s, border-color 0.15s;
-}
-.summary-list li.is-pinned {
-    background: #FCE4EC; border-color: #F48FB1;
-}
-.sum-item-row {
-    display: flex; align-items: flex-start; gap: 7px;
-}
-.sum-pin-checkbox {
-    margin-top: 2px; cursor: pointer; accent-color: #D81B60; flex-shrink: 0;
-}
-.sum-item-text {
-    flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px;
-}
+.summary-list li { background: #f8fafc; border: 1px solid #edf2f7; border-radius: 5px; padding: 6px 8px; }
+.summary-list li.is-pinned { background: #FCE4EC; border-color: #F48FB1; }
+.sum-item-row { display: flex; align-items: flex-start; gap: 7px; }
+.sum-pin-checkbox { margin-top: 2px; cursor: pointer; accent-color: #D81B60; flex-shrink: 0; }
+.sum-item-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
 .sum-item-label { font-size: 12px; font-weight: 600; color: #1e293b; }
 .sum-item-detail { font-size: 11px; color: #64748b; }
 .sum-zoom-btn {
-    flex-shrink: 0; border: 1px solid #cbd5e1; background: #ffffff;
-    border-radius: 4px; width: 24px; height: 22px; padding: 0;
-    display: flex; align-items: center; justify-content: center;
-    font-size: 11px; cursor: pointer; transition: background 0.15s, border-color 0.15s;
+    flex-shrink: 0; border: 1px solid #cbd5e1; background: #ffffff; border-radius: 4px;
+    width: 24px; height: 22px; padding: 0; display: flex; align-items: center; justify-content: center;
+    font-size: 11px; cursor: pointer;
 }
-.sum-zoom-btn:hover {
-    background: #e2e8f0; border-color: #94a3b8;
-}
+.sum-zoom-btn:hover { background: #e2e8f0; border-color: #94a3b8; }
 
 .upload-overlay { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); text-align: center; background: white; padding: 40px; border-radius: 12px; box-shadow: 0 10px 25px rgba(0,0,0,0.1); border: 1px solid #e0e0e0; z-index: 10; }
 .upload-btn { background: #007bff; color: white; border: none; padding: 10px 20px; border-radius: 6px; font-size: 16px; cursor: pointer; margin-top: 15px; }
@@ -1794,24 +1605,15 @@ onUnmounted(() => {
 }
 .info-panel h3 { margin: 0 0 12px 0; padding-right: 28px; font-size: 18px; color: #333; }
 .info-panel p { margin: 0; font-size: 14px; color: #555; line-height: 1.6; }
-.info-activities {
-    margin-top: 16px; padding-top: 12px; border-top: 1px solid #e2e8f0;
-}
-.info-activities h4 {
-    margin: 0 0 8px 0; font-size: 12px; text-transform: uppercase;
-    letter-spacing: 0.4px; color: #475569;
-}
-.info-activities ul {
-    margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 4px;
-    font-size: 13px; color: #334155;
-}
+.info-activities { margin-top: 16px; padding-top: 12px; border-top: 1px solid #e2e8f0; }
+.info-activities h4 { margin: 0 0 8px 0; font-size: 12px; text-transform: uppercase; letter-spacing: 0.4px; color: #475569; }
+.info-activities ul { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: #334155; }
 .info-close-btn {
     position: absolute; top: 12px; right: 12px;
     display: flex; align-items: center; justify-content: center;
     width: 28px; height: 28px; border-radius: 4px;
     cursor: pointer; font-size: 22px; color: #888;
     background: none; border: none; padding: 0; line-height: 1;
-    transition: background 0.15s, color 0.15s;
 }
 .info-close-btn:hover { background: #f0f0f0; color: #222; }
 
@@ -1867,4 +1669,11 @@ onUnmounted(() => {
     background: #ffffff; border: 1px solid #d0d7de; padding: 6px 14px;
     border-radius: 20px; font-size: 0.85rem; color: #444; box-shadow: 0 1px 3px rgba(0,0,0,0.04);
 }
+.empty-actions { margin-top: 18px; }
+.quick-rings-btn {
+    background: #ffffff; border: 1px solid #4CAF50; color: #2e7d32;
+    padding: 8px 16px; border-radius: 8px; font-size: 13px; font-weight: 600;
+    cursor: pointer; transition: background 0.15s, color 0.15s;
+}
+.quick-rings-btn:hover { background: #4CAF50; color: #ffffff; }
 </style>
