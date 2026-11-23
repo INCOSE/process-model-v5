@@ -2,17 +2,24 @@
 import { ref, computed, watch } from 'vue';
 import { store, graphData } from '../store/graphStore.js';
 import {
-  groupOrder,
   groupShortLabels,
   groupColors,
   getProcessGroup,
   getProcessOrderIndex
 } from '../core/iso15288Groups.js';
 
-// Scope: 'full' (entire ISO 15288 model) or 'diagram' (processes from current scenario)
-const scope = ref(store.renderPayload.nodes.size > 0 ? 'diagram' : 'full');
+// Canonical group orders
+const HANDBOOK_GROUP_ORDER = [
+  'External',
+  'Agreement',
+  'Organizational Project-Enabling',
+  'Technical Management',
+  'Technical',
+  'Tailoring',
+  'Others'
+];
 
-const availableGroups = [
+const DEFAULT_GROUP_ORDER = [
   'Technical',
   'Technical Management',
   'Organizational Project-Enabling',
@@ -22,32 +29,97 @@ const availableGroups = [
   'Others'
 ];
 
-// External is enabled by default so inbound/outbound boundary flows are immediately visible
+// Scope: 'full' (entire model) or 'diagram' (processes from active slice)
+const scope = ref(store.renderPayload.nodes.size > 0 ? 'diagram' : 'full');
+
+// Dynamic user-reorderable group order
+const customGroupOrder = ref([...HANDBOOK_GROUP_ORDER]);
+const useHandbookOrder = ref(true);
+
+// Virtual Buses toggle (CTL / ENAB / SIT)
+const useVirtualBuses = ref(false);
+
+// Drag-and-drop state for group pills
+const draggedGroup = ref(null);
+const dragOverGroup = ref(null);
+
+// Active visible groups (External enabled by default; Others enabled if custom model has unmapped processes)
 const activeGroups = ref(
   new Set([
-    'Technical',
-    'Technical Management',
-    'Organizational Project-Enabling',
+    'External',
     'Agreement',
+    'Organizational Project-Enabling',
+    'Technical Management',
+    'Technical',
     'Tailoring',
-    'External'
+    'Others'
   ])
 );
 
 const hoveredCell = ref({ row: -1, col: -1 });
 const selectedCell = ref(null);
 
-// Auto-switch scope when user generates a new diagram
-watch(() => store.renderPayload.nodes.size, (newSize) => {
-  if (newSize > 0) scope.value = 'diagram';
-  else scope.value = 'full';
-  selectedCell.value = null;
+// Detect which groups actually exist in the currently loaded model (handles custom XML models cleanly)
+const presentGroupsSet = computed(() => {
+  const s = new Set();
+  Object.values(store.processes || {}).forEach((name) => {
+    s.add(getProcessGroup(name));
+  });
+  return s;
 });
 
+const isStandardIsoModel = computed(() => {
+  return (
+    presentGroupsSet.value.has('Technical') ||
+    presentGroupsSet.value.has('Technical Management') ||
+    presentGroupsSet.value.has('Agreement')
+  );
+});
+
+const visibleGroupPills = computed(() => {
+  return customGroupOrder.value.filter((g) => presentGroupsSet.value.has(g));
+});
+
+// Check whether any Meta-Level Inheritance flag is enabled in Global Model Settings
+const hasAnyMetaInheritance = computed(() => {
+  const s = store.settings;
+  return Boolean(s.includeControls || s.includeEnables || s.includeSituational);
+});
+
+// Automatically disable Virtual Buses if all meta-inheritance flags are turned off
+watch(hasAnyMetaInheritance, (enabled) => {
+  if (!enabled) {
+    useVirtualBuses.value = false;
+  }
+});
+
+// Auto-switch scope when user generates or clears a slice
+watch(
+  () => store.renderPayload.nodes.size,
+  (newSize) => {
+    if (newSize > 0) scope.value = 'diagram';
+    else scope.value = 'full';
+    selectedCell.value = null;
+  }
+);
+
+// Handbook order checkbox handler
+const toggleHandbookOrder = (checked) => {
+  useHandbookOrder.value = checked;
+  if (checked) {
+    customGroupOrder.value = [...HANDBOOK_GROUP_ORDER];
+  } else {
+    customGroupOrder.value = [...DEFAULT_GROUP_ORDER];
+  }
+  selectedCell.value = null;
+};
+
+// Group visibility toggle
 const toggleGroup = (g) => {
   const next = new Set(activeGroups.value);
   if (next.has(g)) {
-    if (next.size > 1) next.delete(g);
+    const currentlyVisible = visibleGroupPills.value.filter((x) => next.has(x));
+    if (currentlyVisible.length > 1) next.delete(g);
   } else {
     next.add(g);
   }
@@ -55,7 +127,98 @@ const toggleGroup = (g) => {
   selectedCell.value = null;
 };
 
-// Ordered list of processes to display as rows & columns
+// Drag-and-drop handlers for group pills
+const onDragStart = (g, event) => {
+  draggedGroup.value = g;
+  if (event.dataTransfer) {
+    event.dataTransfer.effectAllowed = 'move';
+    event.dataTransfer.setData('text/plain', g);
+  }
+};
+
+const onDragOver = (g, event) => {
+  event.preventDefault();
+  if (draggedGroup.value && draggedGroup.value !== g) {
+    dragOverGroup.value = g;
+  }
+};
+
+const onDragLeave = (g) => {
+  if (dragOverGroup.value === g) dragOverGroup.value = null;
+};
+
+const onDrop = (targetGroup, event) => {
+  event.preventDefault();
+  const srcGroup = draggedGroup.value;
+  draggedGroup.value = null;
+  dragOverGroup.value = null;
+
+  if (!srcGroup || srcGroup === targetGroup) return;
+
+  const list = [...customGroupOrder.value];
+  const fromIdx = list.indexOf(srcGroup);
+  const toIdx = list.indexOf(targetGroup);
+  if (fromIdx === -1 || toIdx === -1) return;
+
+  list.splice(fromIdx, 1);
+  list.splice(toIdx, 0, srcGroup);
+  customGroupOrder.value = list;
+
+  // Uncheck Handbook order if custom order diverges from Handbook order
+  const matchesHandbook = list.every((g, i) => g === HANDBOOK_GROUP_ORDER[i]);
+  useHandbookOrder.value = matchesHandbook;
+  selectedCell.value = null;
+};
+
+const onDragEnd = () => {
+  draggedGroup.value = null;
+  dragOverGroup.value = null;
+};
+
+// Active virtual buses (only for enabled meta-inheritance categories)
+const activeVirtualBuses = computed(() => {
+  if (!useVirtualBuses.value || !hasAnyMetaInheritance.value) return [];
+  const buses = [];
+  if (store.settings.includeControls) {
+    buses.push({
+      id: '__bus_controls__',
+      busTag: 'Controls',
+      name: 'Controls (CTL)',
+      group: 'Virtual Bus',
+      shortGroup: 'CTL',
+      color: '#b45309',
+      doc: 'Virtual bus aggregating inherited Controls artefacts (as in INCOSE SE Handbook v.5 Figure D.1).',
+      isVirtualBus: true
+    });
+  }
+  if (store.settings.includeEnables) {
+    buses.push({
+      id: '__bus_enables__',
+      busTag: 'Enables',
+      name: 'Enables (ENAB)',
+      group: 'Virtual Bus',
+      shortGroup: 'ENAB',
+      color: '#0284c7',
+      doc: 'Virtual bus aggregating inherited Enablers artefacts (as in INCOSE SE Handbook v.5 Figure D.1).',
+      isVirtualBus: true
+    });
+  }
+  if (store.settings.includeSituational) {
+    buses.push({
+      id: '__bus_situational__',
+      busTag: 'Situational',
+      name: 'Situational (SIT)',
+      group: 'Virtual Bus',
+      shortGroup: 'SIT',
+      color: '#7c3aed',
+      doc: 'Virtual bus aggregating Situational inputs and outputs (as in INCOSE SE Handbook v.5 Figure D.1).',
+      isVirtualBus: true
+    });
+  }
+  return buses;
+});
+
+// Ordered list of real processes + optional virtual buses
 const matrixProcesses = computed(() => {
   if (!store.isLoaded) return [];
   const gActive = graphData.gActive();
@@ -75,7 +238,9 @@ const matrixProcesses = computed(() => {
     candidateIds = Object.keys(store.processes);
   }
 
-  return candidateIds
+  const orderArr = customGroupOrder.value;
+
+  const realProcs = candidateIds
     .map((id) => {
       const name = store.processes[id] || (gActive.hasNode(id) ? gActive.getNodeAttribute(id, 'name') : 'Unknown');
       const group = getProcessGroup(name);
@@ -87,34 +252,80 @@ const matrixProcesses = computed(() => {
         shortGroup: groupShortLabels[group] || 'Other',
         color: groupColors[group] || '#546e7a',
         doc,
-        orderIdx: getProcessOrderIndex(name)
+        orderIdx: getProcessOrderIndex(name),
+        isVirtualBus: false
       };
     })
     .filter((p) => scope.value === 'diagram' || activeGroups.value.has(p.group))
     .sort((a, b) => {
-      const gA = groupOrder.indexOf(a.group);
-      const gB = groupOrder.indexOf(b.group);
-      if (gA !== gB) return gA - gB;
+      const gA = orderArr.indexOf(a.group);
+      const gB = orderArr.indexOf(b.group);
+      const idxA = gA === -1 ? 999 : gA;
+      const idxB = gB === -1 ? 999 : gB;
+      if (idxA !== idxB) return idxA - idxB;
       if (a.orderIdx !== b.orderIdx) return a.orderIdx - b.orderIdx;
       return a.name.localeCompare(b.name);
     });
+
+  const buses = activeVirtualBuses.value;
+  if (buses.length === 0) return realProcs;
+
+  // Insert virtual buses right after External (matching Figure D.1: EXT -> CTL -> ENAB -> SIT -> ACQ...)
+  // or at the very start if External is not the first group
+  const extIdx = realProcs.findIndex((p) => p.group === 'External');
+  if (extIdx === 0) {
+    return [realProcs[0], ...buses, ...realProcs.slice(1)];
+  }
+  return [...buses, ...realProcs];
 });
 
 /**
  * Computes exchanged Business Objects between every pair (producer -> consumer).
- * Preserves Situational / Controls / Enables classifications on each artefact.
+ * When Virtual Buses are active, routes Controls / Enables / Situational exchanges
+ * through their dedicated bus rows/columns instead of duplicating them across all process pairs.
  */
 const matrixData = computed(() => {
-  const procs = matrixProcesses.value;
+  const entries = matrixProcesses.value;
   const gActive = graphData.gActive();
-  if (!gActive || procs.length === 0) return { grid: [], maxCount: 1, totalLinks: 0, feedbackLinks: 0 };
+  if (!gActive || entries.length === 0) return { grid: [], maxCount: 1, totalLinks: 0, feedbackLinks: 0 };
 
-  const procIdSet = new Set(procs.map((p) => p.id));
+  const realProcs = entries.filter((p) => !p.isVirtualBus);
+  const realProcIdSet = new Set(realProcs.map((p) => p.id));
   const useHierarchy = store.settings.useHierarchy;
+
+  const activeBusByTag = {};
+  activeVirtualBuses.value.forEach((b) => {
+    activeBusByTag[b.busTag] = b.id;
+  });
 
   // Map: producerId -> Map(consumerId -> Map(objectId -> artefactRecord))
   const exchangeMap = new Map();
-  procs.forEach((p) => exchangeMap.set(p.id, new Map()));
+  entries.forEach((p) => exchangeMap.set(p.id, new Map()));
+
+  const recordExchange = (fromId, toId, objId, tagsSet, viaHierarchyName = '') => {
+    if (fromId === toId) return;
+    if (!exchangeMap.has(fromId)) return;
+    const prodMap = exchangeMap.get(fromId);
+    if (!prodMap.has(toId)) prodMap.set(toId, new Map());
+    const objMap = prodMap.get(toId);
+    const existing = objMap.get(objId);
+
+    if (!existing) {
+      objMap.set(objId, {
+        id: objId,
+        name: gActive.getNodeAttribute(objId, 'name') || 'Unknown',
+        doc: gActive.getNodeAttribute(objId, 'doc') || 'Description is missing in the model.',
+        isSituational: tagsSet.has('Situational'),
+        isControls: tagsSet.has('Controls'),
+        isEnables: tagsSet.has('Enables'),
+        viaHierarchy: viaHierarchyName
+      });
+    } else {
+      if (tagsSet.has('Situational')) existing.isSituational = true;
+      if (tagsSet.has('Controls')) existing.isControls = true;
+      if (tagsSet.has('Enables')) existing.isEnables = true;
+    }
+  };
 
   const isProcessNode = (id) => {
     const t = gActive.getNodeAttribute(id, 'type') || '';
@@ -127,9 +338,7 @@ const matrixData = computed(() => {
     return '';
   };
 
-  procs.forEach((producer) => {
-    const prodMap = exchangeMap.get(producer.id);
-
+  realProcs.forEach((producer) => {
     // Step 1: Producer -> Object (Write / Output)
     gActive.forEachOutEdge(producer.id, (edge1, attr1, u1, obj1) => {
       if (attr1.access === 'hierarchy_reverse') return;
@@ -149,25 +358,23 @@ const matrixData = computed(() => {
           const mergedTags = new Set(curr.tags);
           if (tag2) mergedTags.add(tag2);
 
-          if (procIdSet.has(target) && target !== producer.id) {
-            if (!prodMap.has(target)) prodMap.set(target, new Map());
-            const objMap = prodMap.get(target);
-            const existing = objMap.get(obj1);
+          if (realProcIdSet.has(target) && target !== producer.id) {
+            const viaName = curr.id !== obj1 ? (gActive.getNodeAttribute(curr.id, 'name') || '') : '';
 
-            if (!existing) {
-              objMap.set(obj1, {
-                id: obj1,
-                name: gActive.getNodeAttribute(obj1, 'name') || 'Unknown',
-                doc: gActive.getNodeAttribute(obj1, 'doc') || 'Description is missing in the model.',
-                isSituational: mergedTags.has('Situational'),
-                isControls: mergedTags.has('Controls'),
-                isEnables: mergedTags.has('Enables'),
-                viaHierarchy: curr.id !== obj1 ? (gActive.getNodeAttribute(curr.id, 'name') || '') : ''
-              });
-            } else {
-              if (mergedTags.has('Situational')) existing.isSituational = true;
-              if (mergedTags.has('Controls')) existing.isControls = true;
-              if (mergedTags.has('Enables')) existing.isEnables = true;
+            // Check if this exchange should be routed through an active Virtual Bus
+            let routedThroughBus = false;
+            ['Controls', 'Enables', 'Situational'].forEach((busTag) => {
+              const busId = activeBusByTag[busTag];
+              if (busId && mergedTags.has(busTag)) {
+                const tagOnly = new Set([busTag]);
+                recordExchange(producer.id, busId, obj1, tagOnly, viaName);
+                recordExchange(busId, target, obj1, tagOnly, viaName);
+                routedThroughBus = true;
+              }
+            });
+
+            if (!routedThroughBus) {
+              recordExchange(producer.id, target, obj1, mergedTags, viaName);
             }
           } else if (useHierarchy && curr.depth < 2 && !isProcessNode(target) && !visitedObjs.has(target)) {
             const rType = attr2.type || '';
@@ -185,12 +392,13 @@ const matrixData = computed(() => {
   let totalLinks = 0;
   let feedbackLinks = 0;
 
-  const grid = procs.map((rowProc, rIdx) => {
+  const grid = entries.map((rowProc, rIdx) => {
     const prodMap = exchangeMap.get(rowProc.id);
-    return procs.map((colProc, cIdx) => {
+    return entries.map((colProc, cIdx) => {
       if (rIdx === cIdx) {
         return {
           isDiagonal: true,
+          isBusCell: rowProc.isVirtualBus,
           items: [],
           count: 0,
           isFeedback: false,
@@ -206,6 +414,8 @@ const matrixData = computed(() => {
       const hasSituational = items.some((i) => i.isSituational);
       const hasControls = items.some((i) => i.isControls);
       const hasEnables = items.some((i) => i.isEnables);
+      const isBusCell = rowProc.isVirtualBus || colProc.isVirtualBus;
+
       if (count > 0) {
         totalLinks++;
         if (isFeedback) feedbackLinks++;
@@ -213,6 +423,7 @@ const matrixData = computed(() => {
       }
       return {
         isDiagonal: false,
+        isBusCell,
         items,
         count,
         isFeedback,
@@ -231,6 +442,12 @@ const matrixData = computed(() => {
 const getCellStyle = (cell) => {
   if (cell.isDiagonal || cell.count === 0) return {};
   const intensity = Math.min(1, 0.22 + (cell.count / Math.max(matrixData.value.maxCount, 1)) * 0.78);
+  if (cell.isBusCell) {
+    return {
+      backgroundColor: `rgba(71, 85, 105, ${(0.18 + intensity * 0.62).toFixed(2)})`,
+      color: intensity > 0.45 ? '#ffffff' : '#1e293b'
+    };
+  }
   if (cell.isFeedback) {
     return {
       backgroundColor: `rgba(230, 126, 34, ${intensity.toFixed(2)})`,
@@ -321,35 +538,83 @@ const exportCsv = () => {
             :class="['scope-btn', { active: scope === 'full' }]"
             @click="scope = 'full'"
           >
-            Full ISO 15288 Model
+            Full Model
           </button>
           <button
             :class="['scope-btn', { active: scope === 'diagram' }]"
             :disabled="store.renderPayload.nodes.size === 0"
             @click="scope = 'diagram'"
-            title="Show only processes from the active analysis scenario"
+            title="Show only processes from the active analysis slice"
           >
-            Current Diagram
+            Active Slice
           </button>
         </div>
 
-        <div v-if="scope === 'full'" class="group-filters">
+        <!-- Reorderable & Toggleable Group Pills -->
+        <div v-if="scope === 'full' && visibleGroupPills.length > 0" class="group-filters">
           <button
-            v-for="g in availableGroups"
+            v-for="g in visibleGroupPills"
             :key="g"
-            :class="['group-pill', { active: activeGroups.has(g) }]"
+            draggable="true"
+            :class="[
+              'group-pill',
+              {
+                active: activeGroups.has(g),
+                dragging: draggedGroup === g,
+                'drag-over': dragOverGroup === g
+              }
+            ]"
             :style="activeGroups.has(g) ? { borderColor: groupColors[g], color: groupColors[g], background: '#ffffff' } : {}"
             @click="toggleGroup(g)"
+            @dragstart="onDragStart(g, $event)"
+            @dragover="onDragOver(g, $event)"
+            @dragleave="onDragLeave(g)"
+            @drop="onDrop(g, $event)"
+            @dragend="onDragEnd"
+            title="Click to toggle visibility · Drag left/right to reorder groups in the matrix"
           >
             <span class="dot" :style="{ background: groupColors[g] }"></span>
-            {{ groupShortLabels[g] }}
+            {{ groupShortLabels[g] || g }}
           </button>
         </div>
+
+        <span v-if="isStandardIsoModel" class="toolbar-divider" aria-hidden="true"></span>
+
+        <!-- Handbook Order Toggle -->
+        <label
+          v-if="isStandardIsoModel"
+          class="n2-checkbox"
+          title="Sort groups as in INCOSE SE Handbook v.5 Figure D.1 (External → Agreement → Org → Tech Mgmt → Technical → Tailoring)"
+        >
+          <input
+            type="checkbox"
+            :checked="useHandbookOrder"
+            @change="toggleHandbookOrder($event.target.checked)"
+          />
+          Handbook order
+        </label>
+
+        <!-- Virtual Buses (CTL / ENAB / SIT) Toggle -->
+        <label
+          :class="['n2-checkbox', { disabled: !hasAnyMetaInheritance }]"
+          :title="
+            hasAnyMetaInheritance
+              ? 'Group Controls, Enables, and Situational flows into dedicated virtual bus rows/columns (as in Handbook Figure D.1)'
+              : 'Enable Inherit Controls, Inherit Enables, or Inherit Situational in Global Model Settings (left panel) to use virtual buses'
+          "
+        >
+          <input
+            type="checkbox"
+            v-model="useVirtualBuses"
+            :disabled="!hasAnyMetaInheritance"
+          />
+          Virtual buses (CTL/ENAB/SIT)
+        </label>
       </div>
 
       <div class="n2-toolbar-right">
         <span class="n2-stat">
-          <strong>{{ matrixProcesses.length }}</strong> processes ·
+          <strong>{{ matrixProcesses.length }}</strong> rows ·
           <strong>{{ matrixData.totalLinks }}</strong> interfaces
           (<span class="fb-text">{{ matrixData.feedbackLinks }} feedback</span>)
         </span>
@@ -378,7 +643,7 @@ const exportCsv = () => {
               <th
                 v-for="(colProc, cIdx) in matrixProcesses"
                 :key="colProc.id"
-                :class="['col-header', { highlighted: hoveredCell.col === cIdx }]"
+                :class="['col-header', { highlighted: hoveredCell.col === cIdx, 'is-bus': colProc.isVirtualBus }]"
                 :title="`${colProc.name} (${colProc.group})`"
               >
                 <div class="col-header-inner">
@@ -393,10 +658,10 @@ const exportCsv = () => {
             <tr
               v-for="(rowProc, rIdx) in matrixProcesses"
               :key="rowProc.id"
-              :class="{ 'row-highlighted': hoveredCell.row === rIdx }"
+              :class="{ 'row-highlighted': hoveredCell.row === rIdx, 'bus-row': rowProc.isVirtualBus }"
             >
               <th
-                class="row-header"
+                :class="['row-header', { 'is-bus': rowProc.isVirtualBus }]"
                 :style="{ borderLeft: `4px solid ${rowProc.color}` }"
                 :title="`${rowProc.name} (${rowProc.group})`"
                 @click="selectCell({ isDiagonal: true }, rIdx, rIdx)"
@@ -412,6 +677,7 @@ const exportCsv = () => {
                   'matrix-cell',
                   {
                     diagonal: cell.isDiagonal,
+                    'bus-diagonal': cell.isDiagonal && cell.isBusCell,
                     clickable: cell.isDiagonal || cell.count > 0,
                     crosshair: hoveredCell.row === rIdx || hoveredCell.col === cIdx,
                     selected:
@@ -428,9 +694,11 @@ const exportCsv = () => {
               >
                 <span v-if="cell.isDiagonal" class="diag-mark">{{ rIdx + 1 }}</span>
                 <template v-else-if="cell.count > 0">
-                  <span v-if="cell.hasEnables" class="corner-badge badge-e">E</span>
-                  <span v-if="cell.hasSituational" class="corner-badge badge-s">S</span>
-                  <span v-if="cell.hasControls" class="corner-badge badge-c">C</span>
+                  <template v-if="!cell.isBusCell">
+                    <span v-if="cell.hasEnables" class="corner-badge badge-e">E</span>
+                    <span v-if="cell.hasSituational" class="corner-badge badge-s">S</span>
+                    <span v-if="cell.hasControls" class="corner-badge badge-c">C</span>
+                  </template>
                   <span class="cell-count">{{ cell.count }}</span>
                 </template>
               </td>
@@ -452,8 +720,12 @@ const exportCsv = () => {
         </template>
 
         <template v-else>
-          <span :class="['badge', selectedCell.isFeedback ? 'badge-feedback' : 'badge-forward']">
-            {{ selectedCell.isFeedback ? 'Feedback Loop (Below Diagonal)' : 'Feedforward Flow (Above Diagonal)' }}
+          <span :class="['badge', selectedCell.isBusCell ? 'badge-bus' : (selectedCell.isFeedback ? 'badge-feedback' : 'badge-forward')]">
+            {{
+              selectedCell.isBusCell
+                ? 'Virtual Bus Exchange'
+                : (selectedCell.isFeedback ? 'Feedback Loop (Below Diagonal)' : 'Feedforward Flow (Above Diagonal)')
+            }}
           </span>
           <div class="exchange-route">
             <div class="route-node"><strong>From:</strong> {{ selectedCell.producer.name }}</div>
@@ -490,17 +762,16 @@ const exportCsv = () => {
       <div class="n2-legend-item">
         <span class="swatch swatch-feedback"></span> Feedback (below diagonal)
       </div>
-      <div class="n2-legend-item">
-        <span class="en-tag">E</span> Enables (top-left)
+      <div v-if="useVirtualBuses" class="n2-legend-item">
+        <span class="swatch swatch-bus"></span> Virtual bus (CTL / ENAB / SIT)
       </div>
+      <template v-else>
+        <div class="n2-legend-item"><span class="en-tag">E</span> Enables</div>
+        <div class="n2-legend-item"><span class="sit-tag">S</span> Situational</div>
+        <div class="n2-legend-item"><span class="ctrl-tag">C</span> Controls</div>
+      </template>
       <div class="n2-legend-item">
-        <span class="sit-tag">S</span> Situational (top-right)
-      </div>
-      <div class="n2-legend-item">
-        <span class="ctrl-tag">C</span> Controls (bottom-left)
-      </div>
-      <div class="n2-legend-item">
-        Click any numbered cell to inspect artefacts.
+        Drag group pills to reorder · Click any numbered cell to inspect artefacts.
       </div>
     </div>
   </div>
@@ -532,7 +803,7 @@ const exportCsv = () => {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
 }
 
 .scope-switch {
@@ -545,7 +816,7 @@ const exportCsv = () => {
 .scope-btn {
   border: none;
   background: #f6f8fa;
-  padding: 6px 12px;
+  padding: 6px 11px;
   font-size: 12px;
   font-weight: 600;
   color: #444;
@@ -564,7 +835,7 @@ const exportCsv = () => {
 .group-filters {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
+  gap: 5px;
 }
 
 .group-pill {
@@ -578,14 +849,55 @@ const exportCsv = () => {
   border: 1px solid #d0d7de;
   background: #f0f2f5;
   color: #888;
-  cursor: pointer;
+  cursor: grab;
+  user-select: none;
   transition: all 0.15s;
+}
+.group-pill:active {
+  cursor: grabbing;
+}
+.group-pill.dragging {
+  opacity: 0.4;
+}
+.group-pill.drag-over {
+  box-shadow: -3px 0 0 #1565c0;
+  transform: translateX(2px);
 }
 .group-pill .dot {
   width: 8px;
   height: 8px;
   border-radius: 50%;
   display: inline-block;
+}
+
+.toolbar-divider {
+  width: 1px;
+  height: 20px;
+  background: #cbd5e1;
+  margin: 0 2px;
+}
+
+.n2-checkbox {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #334155;
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+}
+.n2-checkbox.disabled {
+  color: #94a3b8;
+  cursor: not-allowed;
+}
+.n2-checkbox input {
+  margin: 0;
+  cursor: pointer;
+}
+.n2-checkbox.disabled input {
+  cursor: not-allowed;
 }
 
 .n2-stat {
@@ -678,6 +990,10 @@ const exportCsv = () => {
   vertical-align: bottom;
   font-weight: 500;
 }
+.col-header.is-bus {
+  background: #f1f5f9;
+  font-weight: 700;
+}
 .col-header.highlighted {
   background: #e8f0fe;
 }
@@ -717,6 +1033,11 @@ const exportCsv = () => {
   text-overflow: ellipsis;
   cursor: pointer;
 }
+.row-header.is-bus {
+  background: #f8fafc;
+  font-weight: 700;
+  font-style: italic;
+}
 tr.row-highlighted .row-header {
   background: #e8f0fe;
 }
@@ -749,6 +1070,10 @@ tr.row-highlighted .row-header {
   color: #64748b;
   font-weight: 600;
 }
+.matrix-cell.bus-diagonal {
+  background: #e2e8f0;
+  color: #334155;
+}
 .matrix-cell.clickable {
   cursor: pointer;
 }
@@ -762,7 +1087,7 @@ tr.row-highlighted .row-header {
   z-index: 1;
 }
 
-/* Corner indicators inside matrix cells */
+/* Corner indicators inside matrix cells (no background box) */
 .corner-badge {
   position: absolute;
   font-size: 7.5px;
@@ -773,9 +1098,9 @@ tr.row-highlighted .row-header {
   pointer-events: none;
   z-index: 2;
 }
-.badge-e { top: 2px; left: 3px; }      /* Top-left: Enables */
-.badge-s { top: 2px; right: 3px; }     /* Top-right: Situational */
-.badge-c { bottom: 2px; left: 3px; }   /* Bottom-left: Controls */
+.badge-e { top: 2px; left: 3px; }
+.badge-s { top: 2px; right: 3px; }
+.badge-c { bottom: 2px; left: 3px; }
 
 /* Inspector Drawer */
 .n2-inspector {
@@ -819,6 +1144,7 @@ tr.row-highlighted .row-header {
 }
 .badge-forward { background: #2e7d32; }
 .badge-feedback { background: #d35400; }
+.badge-bus { background: #475569; }
 
 .n2-inspector h3 {
   margin: 0 0 10px 0;
@@ -949,4 +1275,5 @@ tr.row-highlighted .row-header {
 }
 .swatch-forward { background: rgba(46, 125, 50, 0.7); }
 .swatch-feedback { background: rgba(230, 126, 34, 0.75); }
+.swatch-bus { background: rgba(71, 85, 105, 0.65); }
 </style>
