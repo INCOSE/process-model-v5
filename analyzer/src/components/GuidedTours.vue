@@ -74,7 +74,7 @@ const formatTime = (sec) => {
   return `${String(m).padStart(2, '0')}:${String(rem).padStart(2, '0')}`;
 };
 
-// --- PLAYBACK CONTROLS (Audio-driven with automatic silent timer fallback) ---
+// --- PLAYBACK CONTROLS ---
 const stopFallbackTimer = () => {
   if (fallbackRaf) {
     cancelAnimationFrame(fallbackRaf);
@@ -221,26 +221,29 @@ const destroyRenderers = () => {
 
 // --- 3D ENGINE ---
 const create3DSprite = (node) => {
+  const isArtefact = node.nodeType === 'artefact';
   const canvas = document.createElement('canvas');
   const ctx = canvas.getContext('2d');
-  const titleFont = 'bold 21px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
-  const subFont = '600 14px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
+  const titleFont = isArtefact
+    ? '600 17px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif'
+    : 'bold 20px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
+  const subFont = '600 13px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
 
   ctx.font = titleFont;
   const w1 = ctx.measureText(node.label).width;
   ctx.font = subFont;
   const w2 = ctx.measureText(node.shortLabel).width;
 
-  canvas.width = Math.ceil(Math.max(w1, w2) + 32);
-  canvas.height = 64;
+  canvas.width = Math.ceil(Math.max(w1, w2) + 28);
+  canvas.height = isArtefact ? 54 : 62;
 
-  const r = 10;
+  const r = isArtefact ? 24 : 9;
   const w = canvas.width;
   const h = canvas.height;
 
-  ctx.fillStyle = 'rgba(255, 255, 255, 0.94)';
+  ctx.fillStyle = isArtefact ? 'rgba(232, 245, 233, 0.94)' : 'rgba(255, 255, 255, 0.95)';
   ctx.strokeStyle = node.color;
-  ctx.lineWidth = 3.5;
+  ctx.lineWidth = isArtefact ? 2.5 : 3.5;
 
   ctx.beginPath();
   ctx.moveTo(r, 2);
@@ -260,18 +263,22 @@ const create3DSprite = (node) => {
   ctx.fillStyle = '#1e293b';
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
-  ctx.fillText(node.label, w / 2, 23);
+  ctx.fillText(node.label, w / 2, isArtefact ? 19 : 22);
 
   ctx.font = subFont;
   ctx.fillStyle = node.color;
-  ctx.fillText(node.shortLabel, w / 2, 46);
+  ctx.fillText(node.shortLabel, w / 2, isArtefact ? 39 : 44);
 
   const texture = new THREE.CanvasTexture(canvas);
   texture.minFilter = THREE.LinearFilter;
   const mat = new THREE.SpriteMaterial({ map: texture, transparent: true, depthWrite: false });
   const sprite = new THREE.Sprite(mat);
-  sprite.scale.set(canvas.width * 0.22, canvas.height * 0.22, 1);
-  sprite.position.set(0, 24, 0);
+
+  const scale = isArtefact ? 0.18 : 0.21;
+  sprite.scale.set(canvas.width * scale, canvas.height * scale, 1);
+  // Stagger spine artefact labels slightly below the spine so they never collide with process labels above it
+  const yOffset = isArtefact && node.pos3d.y === 0 ? -19 : (isArtefact ? 17 : 23);
+  sprite.position.set(0, yOffset, 0);
   return sprite;
 };
 
@@ -283,7 +290,7 @@ const createZoneBannerSprite = (text, colorHex) => {
   const tw = ctx.measureText(text).width;
   canvas.width = Math.ceil(tw + 28);
   canvas.height = 38;
-  ctx.fillStyle = 'rgba(255,255,255,0.82)';
+  ctx.fillStyle = 'rgba(255,255,255,0.85)';
   ctx.fillRect(0, 0, canvas.width, canvas.height);
   ctx.font = font;
   ctx.fillStyle = colorHex;
@@ -293,7 +300,7 @@ const createZoneBannerSprite = (text, colorHex) => {
   const tex = new THREE.CanvasTexture(canvas);
   tex.minFilter = THREE.LinearFilter;
   const sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, transparent: true, depthWrite: false }));
-  sprite.scale.set(canvas.width * 0.25, canvas.height * 0.25, 1);
+  sprite.scale.set(canvas.width * 0.26, canvas.height * 0.26, 1);
   return sprite;
 };
 
@@ -302,10 +309,9 @@ const add3DZoneGuides = () => {
   clear3DDecor();
   const group = new THREE.Group();
 
-  // Subtle horizontal reference line along the transformation spine
   const spineGeo = new THREE.BufferGeometry().setFromPoints([
-    new THREE.Vector3(-440, 0, -25),
-    new THREE.Vector3(440, 0, -25)
+    new THREE.Vector3(-540, 0, -25),
+    new THREE.Vector3(540, 0, -25)
   ]);
   const spineLine = new THREE.Line(
     spineGeo,
@@ -314,11 +320,11 @@ const add3DZoneGuides = () => {
   group.add(spineLine);
 
   const valLabel = createZoneBannerSprite('VALIDATION LOOPS · "Right system?"', '#7c3aed');
-  valLabel.position.set(0, 275, -15);
+  valLabel.position.set(0, 330, -15);
   group.add(valLabel);
 
   const verLabel = createZoneBannerSprite('VERIFICATION LOOPS · "Built right?"', '#0f766e');
-  verLabel.position.set(0, -275, -15);
+  verLabel.position.set(0, -330, -15);
   group.add(verLabel);
 
   threeDecorGroup = group;
@@ -336,7 +342,7 @@ const render3D = () => {
     fx: n.pos3d.x,
     fy: n.pos3d.y,
     fz: n.pos3d.z,
-    val: n.role === 'spine' ? 14 : 18
+    val: n.nodeType === 'artefact' ? 7 : (n.role === 'spine' ? 14 : 18)
   }));
 
   const links = tour.edges.map((e) => ({ ...e }));
@@ -349,12 +355,11 @@ const render3D = () => {
     .nodeRelSize(3.2)
     .nodeThreeObjectExtend(true)
     .nodeThreeObject((node) => (showLabels3D.value ? create3DSprite(node) : null))
-    .nodeLabel((node) => `${node.label} (${node.processes.join(', ')})`)
-    .linkLabel((link) => link.label)
+    .nodeLabel((node) => `${node.label}: ${node.items.join(', ')}`)
     .linkCurvature((link) => link.curve || 0)
-    .linkDirectionalArrowLength(6)
+    .linkDirectionalArrowLength(5.5)
     .linkDirectionalArrowRelPos(0.92)
-    .linkDirectionalParticleWidth(3.2)
+    .linkDirectionalParticleWidth(3.0)
     .linkDirectionalParticleSpeed(0.008)
     .onNodeClick((node) => { selectedNodeInfo.value = node; })
     .onBackgroundClick(() => { selectedNodeInfo.value = null; });
@@ -363,36 +368,41 @@ const render3D = () => {
   applyChapterVisuals(true);
 };
 
-// --- 2D VIS.JS ENGINE ---
+// --- 2D VIS.JS ENGINE (chosen: false prevents hover font-bold resize jumps) ---
 const renderVisJs = () => {
   destroyRenderers();
   if (!visDiv.value) return;
 
   const tour = activeTour.value;
 
-  visBaseNodes = tour.nodes.map((n) => ({
-    id: n.id,
-    label: `${n.label}\n(${n.shortLabel})`,
-    x: n.pos2d.x,
-    y: n.pos2d.y,
-    shape: n.role === 'spine' ? 'box' : 'ellipse',
-    widthConstraint: { minimum: 170, maximum: 220 },
-    color: {
-      background: n.bg,
-      border: n.color,
-      highlight: { background: n.bg, border: n.color }
-    },
-    font: {
-      face: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
-      size: 12.5,
-      bold: true,
-      color: '#1e293b'
-    },
-    borderWidth: 2.5,
-    margin: 11,
-    opacity: 1,
-    _meta: n
-  }));
+  visBaseNodes = tour.nodes.map((n) => {
+    const isArtefact = n.nodeType === 'artefact';
+    return {
+      id: n.id,
+      label: `${n.label}\n(${n.shortLabel})`,
+      x: n.pos2d.x,
+      y: n.pos2d.y,
+      shape: isArtefact ? 'ellipse' : 'box',
+      widthConstraint: isArtefact
+        ? { minimum: 145, maximum: 195 }
+        : { minimum: 165, maximum: 220 },
+      color: {
+        background: n.bg,
+        border: n.color,
+        highlight: { background: n.bg, border: n.color }
+      },
+      font: {
+        face: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
+        size: isArtefact ? 11.5 : 12.5,
+        bold: !isArtefact,
+        color: '#1e293b'
+      },
+      borderWidth: isArtefact ? 2 : 2.5,
+      margin: isArtefact ? 8 : 11,
+      opacity: 1,
+      _meta: n
+    };
+  });
 
   visBaseEdges = tour.edges.map((e) => {
     const isConstraint = e.kind === 'constraint';
@@ -406,20 +416,12 @@ const renderVisJs = () => {
       id: e.id,
       from: e.source,
       to: e.target,
-      label: e.label,
       dashes: isConstraint,
       width: 2,
-      arrows: { to: { enabled: true, scaleFactor: 0.85 } },
+      arrows: { to: { enabled: true, scaleFactor: 0.8 } },
       smooth: e.curve
         ? { enabled: true, type: 'curvedCW', roundness: e.curve }
         : { enabled: false },
-      font: {
-        size: 10.5,
-        align: 'middle',
-        strokeWidth: 3,
-        strokeColor: '#ffffff',
-        color: '#334155'
-      },
       color: { color: baseColor, highlight: baseColor },
       _baseColor: baseColor,
       _kind: e.kind
@@ -440,22 +442,19 @@ const renderVisJs = () => {
   // Subtle horizontal zone bands matching the Handbook diagram
   visNetwork.on('beforeDrawing', (ctx) => {
     ctx.save();
-    // Validation zone (top)
     ctx.fillStyle = 'rgba(124, 58, 237, 0.045)';
-    ctx.fillRect(-620, -345, 1240, 170);
+    ctx.fillRect(-980, -430, 1960, 315);
     ctx.fillStyle = '#7c3aed';
-    ctx.font = 'bold 13px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
-    ctx.fillText('VALIDATION LOOPS · "Do we have the right system?"', -595, -322);
+    ctx.font = 'bold 14px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
+    ctx.fillText('VALIDATION LOOPS · "Do we have the right system?"', -950, -402);
 
-    // Transformation spine band (middle)
     ctx.fillStyle = 'rgba(30, 41, 59, 0.03)';
-    ctx.fillRect(-620, -70, 1240, 140);
+    ctx.fillRect(-980, -85, 1960, 170);
 
-    // Verification zone (bottom)
     ctx.fillStyle = 'rgba(15, 118, 110, 0.045)';
-    ctx.fillRect(-620, 165, 1240, 180);
+    ctx.fillRect(-980, 115, 1960, 315);
     ctx.fillStyle = '#0f766e';
-    ctx.fillText('VERIFICATION LOOPS · "Are we building it right?"', -595, 330);
+    ctx.fillText('VERIFICATION LOOPS · "Are we building it right?"', -950, 410);
     ctx.restore();
   });
 
@@ -473,44 +472,55 @@ const renderVisJs = () => {
   }, 60);
 };
 
-// --- MERMAID ENGINE ---
+// --- MERMAID ENGINE (strict class shorthand without leading space) ---
 const buildTourMermaidCode = () => {
   const tour = activeTour.value;
   const lines = [
     'flowchart TB',
-    'classDef spine fill:#f8fafc,stroke:#334155,stroke-width:2px,color:#1e293b;',
+    'classDef spine fill:#fff8e1,stroke:#d6b656,stroke-width:2px,color:#1e293b;',
     'classDef validation fill:#f3e8ff,stroke:#7c3aed,stroke-width:2.5px,color:#4c1d95,font-weight:bold;',
     'classDef verification fill:#ccfbf1,stroke:#0f766e,stroke-width:2.5px,color:#134e4a,font-weight:bold;',
     'classDef analysis fill:#fef3c7,stroke:#b45309,stroke-width:2px,color:#78350f;',
+    'classDef artefact fill:#e8f5e9,stroke:#4caf50,stroke-width:1.8px,color:#1b5e20;',
     '',
     'subgraph sg_val ["VALIDATION · Do we have the right system?"]',
+    '  direction LR',
     '  style sg_val fill:#faf5ff,stroke:#c4b5fd,stroke-width:1.5px,color:#6d28d9;',
-    '  proc_validation(["Validation<br/>(VAL)"]):::validation',
+    '  art_validated_defs(["Validated Needs, Arch &amp; Design<br/>(2 artefacts)"]):::artefact',
+    '  proc_validation["Validation<br/>(VAL)"]:::validation',
+    '  art_validated_sys(["Validated System &amp; Report<br/>(2 artefacts)"]):::artefact',
+    '  art_installed_sys(["Installed System &amp; Report<br/>(2 artefacts)"]):::artefact',
     'end',
     '',
-    'subgraph sg_spine ["TRANSFORMATION SPINE · Technical Processes"]',
+    'subgraph sg_spine ["TRANSFORMATION SPINE · Technical Processes &amp; Intermediate Artefacts"]',
     '  direction LR',
     '  style sg_spine fill:#f8fafc,stroke:#cbd5e1,stroke-width:1.5px,color:#334155;',
     '  stage_concept["Concept &amp; Stakeholder Needs<br/>(BMA + SNRD)"]:::spine',
+    '  art_stakeholder_reqs(["Stakeholder Needs &amp; Concepts<br/>(4 artefacts)"]):::artefact',
     '  stage_srd["System Requirements<br/>(SRD)"]:::spine',
+    '  art_system_reqs(["System Requirements &amp; Criteria<br/>(3 artefacts)"]):::artefact',
     '  stage_arch["Architecture &amp; Design<br/>(SAD + DD)"]:::spine',
+    '  art_arch_design(["Architecture &amp; Design Baseline<br/>(6 artefacts)"]):::artefact',
     '  stage_realise["System Realisation<br/>(IMPL + INT)"]:::spine',
+    '  art_integrated_sys(["Integrated System<br/>(4 artefacts)"]):::artefact',
     '  stage_deploy["Deployment, Use &amp; Disposal<br/>(TRAN · OPER · MAINT · DISP)"]:::spine',
     'end',
     '',
     'subgraph sg_ver ["VERIFICATION · Are we building it right?"]',
     '  direction LR',
     '  style sg_ver fill:#f0fdfa,stroke:#99f6e4,stroke-width:1.5px,color:#0f766e;',
-    '  proc_sys_analysis(["System Analysis<br/>(SA)"]):::analysis',
-    '  proc_verification(["Verification<br/>(VER)"]):::verification',
+    '  proc_sys_analysis["System Analysis<br/>(SA)"]:::analysis',
+    '  art_constraints(["Constraints on Solution<br/>(2 artefacts)"]):::artefact',
+    '  art_verified_defs(["Verified Reqs, Arch &amp; Design<br/>(2 artefacts)"]):::artefact',
+    '  proc_verification["Verification<br/>(VER)"]:::verification',
+    '  art_verified_sys(["Verified System &amp; Report<br/>(2 artefacts)"]):::artefact',
     'end',
     ''
   ];
 
   tour.edges.forEach((e) => {
     const arrow = e.kind === 'constraint' ? '-.->' : '-->';
-    const safeLabel = e.label.replace(/"/g, "'");
-    lines.push(`${e.source} ${arrow}|"${safeLabel}"| ${e.target}`);
+    lines.push(`${e.source} ${arrow} ${e.target}`);
   });
 
   tour.nodes.forEach((n) => {
@@ -577,7 +587,12 @@ const applyChapterVisuals = (forceCamera = false) => {
   if (activeEngine.value === '3d' && threeGraph) {
     threeGraph
       .nodeColor((n) => (activeNodeSet.has(n.id) ? n.color : '#d5dce4'))
-      .nodeVal((n) => (activeNodeSet.has(n.id) ? (n.role === 'spine' ? 20 : 24) : 9))
+      .nodeVal((n) => {
+        if (activeNodeSet.has(n.id)) {
+          return n.nodeType === 'artefact' ? 12 : (n.role === 'spine' ? 20 : 24);
+        }
+        return n.nodeType === 'artefact' ? 4.5 : 8;
+      })
       .linkColor((l) => {
         if (!activeEdgeSet.has(l.id)) return '#e2e8f0';
         if (l.kind === 'validation') return '#7c3aed';
@@ -610,7 +625,7 @@ const applyChapterVisuals = (forceCamera = false) => {
         return isActive
           ? {
               ...n,
-              borderWidth: 4.5,
+              borderWidth: n._meta.nodeType === 'artefact' ? 3.2 : 4.2,
               opacity: 1,
               shadow: { enabled: true, color: 'rgba(15, 23, 42, 0.2)', size: 12, x: 0, y: 3 }
             }
@@ -619,7 +634,7 @@ const applyChapterVisuals = (forceCamera = false) => {
               color: { background: '#f5f7fa', border: '#d8dee6' },
               font: { ...n.font, color: '#94a3b8' },
               borderWidth: 1.5,
-              opacity: 0.35,
+              opacity: 0.32,
               shadow: false
             };
       })
@@ -631,14 +646,12 @@ const applyChapterVisuals = (forceCamera = false) => {
         return isActive
           ? {
               ...e,
-              width: 3.4,
-              color: { color: e._baseColor, highlight: e._baseColor },
-              font: { ...e.font, color: e._baseColor, bold: true }
+              width: 3.2,
+              color: { color: e._baseColor, highlight: e._baseColor }
             }
           : {
               ...e,
               width: 1,
-              label: '',
               color: { color: 'rgba(180, 190, 200, 0.25)' }
             };
       })
@@ -668,7 +681,7 @@ const applyChapterVisuals = (forceCamera = false) => {
       if (!matched) return;
       const isActive = activeNodeSet.has(matched.id);
 
-      el.style.opacity = isActive ? '1' : '0.28';
+      el.style.opacity = isActive ? '1' : '0.26';
       el.style.filter = isActive ? `drop-shadow(0 0 8px ${matched.color}66)` : 'none';
       el.querySelectorAll(MERMAID_SHAPE_SEL).forEach((shape) => {
         if (isActive) {
@@ -683,13 +696,10 @@ const applyChapterVisuals = (forceCamera = false) => {
       });
     });
 
-    // Highlight active Mermaid edge paths & labels by index order
     const edgePaths = mermaidDiv.value.querySelectorAll('.edgePaths path.flowchart-link');
-    const edgeLabels = mermaidDiv.value.querySelectorAll('.edgeLabels .edgeLabel');
     tour.edges.forEach((e, idx) => {
       const isActive = activeEdgeSet.has(e.id);
       const pathEl = edgePaths[idx];
-      const lblEl = edgeLabels[idx];
       const activeColor =
         e.kind === 'validation' ? '#7c3aed'
         : e.kind === 'verification' ? '#0f766e'
@@ -706,16 +716,13 @@ const applyChapterVisuals = (forceCamera = false) => {
           pathEl.style.removeProperty('stroke-width');
         }
       }
-      if (lblEl) {
-        lblEl.style.opacity = isActive ? '1' : '0.12';
-      }
     });
   }
 };
 
 const fitView = () => {
   if (activeEngine.value === '3d' && threeGraph) {
-    threeGraph.cameraPosition({ x: 0, y: 65, z: 780 }, { x: 0, y: 0, z: 0 }, 650);
+    threeGraph.cameraPosition({ x: 0, y: 75, z: 980 }, { x: 0, y: 0, z: 0 }, 650);
   } else if (activeEngine.value === 'visjs' && visNetwork) {
     visNetwork.fit({ animation: { duration: 450, easingFunction: 'easeInOutQuad' } });
   } else if (activeEngine.value === 'mermaid' && panZoomInstance) {
@@ -831,18 +838,26 @@ onUnmounted(() => {
       </div>
     </div>
 
-    <!-- Click-to-Inspect Node Card -->
+    <!-- Click-to-Inspect Super-Node Card (Processes OR Artefacts) -->
     <div v-if="selectedNodeInfo" class="info-panel">
       <button class="info-close-btn" @click="selectedNodeInfo = null" aria-label="Close">&times;</button>
-      <span class="info-group-tag" :style="{ background: selectedNodeInfo.bg, color: selectedNodeInfo.color }">
-        {{ selectedNodeInfo.shortLabel }}
-      </span>
+      <div class="info-badges">
+        <span class="info-type-pill" :class="selectedNodeInfo.nodeType">
+          {{ selectedNodeInfo.nodeType === 'artefact' ? 'Artefact Super-Node' : 'Process Super-Node' }}
+        </span>
+        <span class="info-group-tag" :style="{ background: selectedNodeInfo.bg, color: selectedNodeInfo.color }">
+          {{ selectedNodeInfo.shortLabel }}
+        </span>
+      </div>
       <h3>{{ selectedNodeInfo.label }}</h3>
       <p>{{ selectedNodeInfo.description }}</p>
       <div class="info-procs">
-        <h4>ISO 15288 Processes Included</h4>
+        <h4>
+          {{ selectedNodeInfo.nodeType === 'artefact' ? 'ISO 15288 Artefacts Included' : 'ISO 15288 Processes Included' }}
+          ({{ selectedNodeInfo.items.length }})
+        </h4>
         <ul>
-          <li v-for="p in selectedNodeInfo.processes" :key="p">{{ p }}</li>
+          <li v-for="item in selectedNodeInfo.items" :key="item">{{ item }}</li>
         </ul>
       </div>
     </div>
@@ -963,15 +978,24 @@ onUnmounted(() => {
 
 /* Info Panel */
 .info-panel {
-  position: absolute; top: 14px; right: 16px; width: 330px; max-height: calc(100% - 150px);
+  position: absolute; top: 14px; right: 16px; width: 340px; max-height: calc(100% - 150px);
   background: #ffffff; border: 1px solid #d0d7de; border-radius: 8px;
   box-shadow: 0 10px 25px rgba(0, 0, 0, 0.16); padding: 18px; overflow-y: auto; z-index: 200;
 }
+.info-badges {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-bottom: 8px; padding-right: 26px;
+}
+.info-type-pill {
+  font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.3px;
+  padding: 2px 7px; border-radius: 10px;
+}
+.info-type-pill.process { background: #fff3cd; color: #8a5a00; }
+.info-type-pill.artefact { background: #e8f5e9; color: #1b5e20; }
 .info-group-tag {
-  display: inline-block; margin-bottom: 8px; padding: 2px 8px;
+  display: inline-block; padding: 2px 8px;
   font-size: 11px; font-weight: 700; border-radius: 10px;
 }
-.info-panel h3 { margin: 0 0 10px 0; padding-right: 26px; font-size: 16px; color: #1e293b; }
+.info-panel h3 { margin: 0 0 10px 0; font-size: 16px; color: #1e293b; }
 .info-panel p { margin: 0; font-size: 13px; color: #475569; line-height: 1.55; }
 .info-procs { margin-top: 14px; padding-top: 10px; border-top: 1px solid #e2e8f0; }
 .info-procs h4 { margin: 0 0 6px 0; font-size: 11px; text-transform: uppercase; color: #64748b; }
