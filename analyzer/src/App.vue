@@ -5,6 +5,7 @@ import GraphCanvas from './components/GraphCanvas.vue';
 import { store, loadDefaultModel, getCaseDefaults, executeActiveCase } from './store/graphStore.js';
 import { CaseRegistry } from './cases/caseRegistry.js';
 import { parseUrlState, buildShareUrl } from './core/urlState.js';
+import { HANDBOOK_GROUP_ORDER } from './core/iso15288Groups.js';
 
 const projectionTabs = [
   { id: 'graph', label: '🕸️ 2D Diagram' },
@@ -22,7 +23,7 @@ const tourTabs = [
   { id: 'tours', label: '🎬 Guided Tours' }
 ];
 
-const isSidebarCollapsed = ref(false);
+// Sidebar collapse state lives in store.isSidebarCollapsed so Share Link can capture it
 const isMobileMenuOpen = ref(false);
 const isMobile = ref(typeof window !== 'undefined' ? window.innerWidth <= 768 : false);
 const shareStatus = ref('');
@@ -38,7 +39,7 @@ const toggleSidebar = () => {
   if (isMobile.value) {
     isMobileMenuOpen.value = !isMobileMenuOpen.value;
   } else {
-    isSidebarCollapsed.value = !isSidebarCollapsed.value;
+    store.isSidebarCollapsed = !store.isSidebarCollapsed;
   }
 };
 
@@ -66,16 +67,43 @@ onMounted(async () => {
 
   const urlState = parseUrlState();
 
+  if (urlState?.isSidebarCollapsed !== undefined) {
+    store.isSidebarCollapsed = urlState.isSidebarCollapsed;
+  }
   if (urlState?.settings) {
     Object.assign(store.settings, urlState.settings);
   }
   if (urlState?.activeView) store.activeView = urlState.activeView;
   if (urlState?.activeEngine) store.activeEngine = urlState.activeEngine;
+
+  // 2D Vis.js options
   if (urlState?.scope2d) store.visOptions.scope = urlState.scope2d;
   if (urlState?.use2DRings !== undefined) store.visOptions.useRings = urlState.use2DRings;
+  if (urlState?.ringOrder) store.visOptions.ringOrder = urlState.ringOrder;
+  if (urlState?.activeRingGroups) store.visOptions.activeRingGroups = urlState.activeRingGroups;
+
+  // 3D Space options
   if (urlState?.scope3d) store.threeOptions.scope = urlState.scope3d;
   if (urlState?.is3DLayered !== undefined) store.threeOptions.isLayered = urlState.is3DLayered;
   if (urlState?.show3DLabels !== undefined) store.threeOptions.showLabels = urlState.show3DLabels;
+
+  // Shared group order & visibility (N2 & 3D)
+  if (urlState?.groupOrder) {
+    store.groupOrder = urlState.groupOrder;
+    store.useHandbookOrder = urlState.groupOrder.every((g, i) => g === HANDBOOK_GROUP_ORDER[i]);
+  }
+  if (urlState?.activeGroups) store.activeGroups = urlState.activeGroups;
+
+  // N2 Matrix options
+  if (urlState?.useVirtualBuses !== undefined) store.n2Options.useVirtualBuses = urlState.useVirtualBuses;
+
+  // Guided Tours options
+  if (urlState?.tourId) store.tourOptions.tourId = urlState.tourId;
+  if (urlState?.tourEngine) store.tourOptions.engine = urlState.tourEngine;
+  if (urlState?.tourCaptions !== undefined) store.tourOptions.showCaptions = urlState.tourCaptions;
+  if (urlState?.tourLabels3D !== undefined) store.tourOptions.showLabels3D = urlState.tourLabels3D;
+  if (urlState?.tourTime !== undefined) store.tourOptions.currentTime = urlState.tourTime;
+
   if (urlState?.selectedChecklistProcessId) {
     store.selectedChecklistProcessId = urlState.selectedChecklistProcessId;
   }
@@ -97,6 +125,11 @@ onMounted(async () => {
   if (urlState?.autoRun && store.isLoaded) {
     executeActiveCase(false);
   }
+
+  // Apply explicit N2 scope after any autoRun so URL preference always wins
+  if (urlState?.n2Scope) {
+    store.n2Options.scope = urlState.n2Scope;
+  }
 });
 
 onUnmounted(() => {
@@ -108,15 +141,15 @@ onUnmounted(() => {
   <div class="app-shell">
     <!-- Unified Top Header Bar -->
     <header class="app-topbar">
-      <div class="topbar-brand" :class="{ collapsed: !isMobile && isSidebarCollapsed }">
+      <div class="topbar-brand" :class="{ collapsed: !isMobile && store.isSidebarCollapsed }">
         <button
           class="sidebar-toggle-btn"
           @click="toggleSidebar"
-          :title="isMobile ? 'Toggle settings panel' : (isSidebarCollapsed ? 'Show sidebar' : 'Hide sidebar')"
-          :aria-expanded="isMobile ? isMobileMenuOpen : !isSidebarCollapsed"
+          :title="isMobile ? 'Toggle settings panel' : (store.isSidebarCollapsed ? 'Show sidebar' : 'Hide sidebar')"
+          :aria-expanded="isMobile ? isMobileMenuOpen : !store.isSidebarCollapsed"
         >
           <span v-if="isMobile">☰</span>
-          <span v-else>{{ isSidebarCollapsed ? '☰' : '◧' }}</span>
+          <span v-else>{{ store.isSidebarCollapsed ? '☰' : '◧' }}</span>
         </button>
         <h2 class="app-title">ISO 15288 Analyzer</h2>
       </div>
@@ -182,7 +215,7 @@ onUnmounted(() => {
         :class="[
           'sidebar',
           {
-            'is-collapsed': !isMobile && isSidebarCollapsed,
+            'is-collapsed': !isMobile && store.isSidebarCollapsed,
             'is-open': isMobile && isMobileMenuOpen
           }
         ]"

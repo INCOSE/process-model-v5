@@ -6,6 +6,7 @@ import { Network } from 'vis-network';
 import ForceGraph3D from '3d-force-graph';
 import * as THREE from 'three';
 
+import { store } from '../store/graphStore.js';
 import { guidedToursList } from '../tours/vvLoopsTour.js';
 
 const stageRef = ref(null);
@@ -14,16 +15,32 @@ const visDiv = ref(null);
 const mermaidDiv = ref(null);
 const audioRef = ref(null);
 
-const selectedTourId = ref(guidedToursList[0].id);
-const activeEngine = ref('3d'); // '3d' | 'visjs' | 'mermaid'
-const showCaptions = ref(true);
-const showLabels3D = ref(true);
+const selectedTourId = computed({
+  get: () => store.tourOptions.tourId,
+  set: (v) => { store.tourOptions.tourId = v; }
+});
+const activeEngine = computed({
+  get: () => store.tourOptions.engine,
+  set: (v) => { store.tourOptions.engine = v; }
+});
+const showCaptions = computed({
+  get: () => store.tourOptions.showCaptions,
+  set: (v) => { store.tourOptions.showCaptions = v; }
+});
+const showLabels3D = computed({
+  get: () => store.tourOptions.showLabels3D,
+  set: (v) => { store.tourOptions.showLabels3D = v; }
+});
+const currentTime = computed({
+  get: () => store.tourOptions.currentTime,
+  set: (v) => { store.tourOptions.currentTime = v; }
+});
+
 const selectedNodeInfo = ref(null);
 
 // Playback state
 const isPlaying = ref(false);
 const isMuted = ref(false);
-const currentTime = ref(0);
 const duration = ref(guidedToursList[0].duration);
 const audioError = ref(false);
 
@@ -172,6 +189,9 @@ const onAudioLoadedMetadata = () => {
   if (audioRef.value && Number.isFinite(audioRef.value.duration) && audioRef.value.duration > 0) {
     duration.value = audioRef.value.duration;
     audioError.value = false;
+    if (currentTime.value > 0 && currentTime.value < audioRef.value.duration) {
+      audioRef.value.currentTime = currentTime.value;
+    }
   }
 };
 

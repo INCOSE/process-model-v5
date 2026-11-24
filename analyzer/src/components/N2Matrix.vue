@@ -1,6 +1,6 @@
 <script setup>
 import { ref, computed, watch } from 'vue';
-import { store, graphData, reorderGlobalGroup, setHandbookOrder } from '../store/graphStore.js';
+import { store, graphData, reorderGlobalGroup, setHandbookOrder, toggleGlobalGroupVisibility } from '../store/graphStore.js';
 import GroupOrderBar from './GroupOrderBar.vue';
 import {
   groupShortLabels,
@@ -30,31 +30,16 @@ const DEFAULT_GROUP_ORDER = [
   'Others'
 ];
 
-// Scope: 'full' (entire model) or 'diagram' (processes from active slice)
-const scope = ref(store.renderPayload.nodes.size > 0 ? 'diagram' : 'full');
-
-// Dynamic user-reorderable group order
-// Shared with 3D Space via store.groupOrder & store.useHandbookOrder
-
-// Virtual Buses toggle (CTL / ENAB / SIT)
-const useVirtualBuses = ref(false);
-
-// Drag-and-drop state for group pills
-const draggedGroup = ref(null);
-const dragOverGroup = ref(null);
-
-// Active visible groups (External enabled by default; Others enabled if custom model has unmapped processes)
-const activeGroups = ref(
-  new Set([
-    'External',
-    'Agreement',
-    'Organizational Project-Enabling',
-    'Technical Management',
-    'Technical',
-    'Tailoring',
-    'Others'
-  ])
-);
+// Scope, Virtual Buses, and Active Groups live in graphStore for Share Link persistence
+const scope = computed({
+  get: () => store.n2Options.scope,
+  set: (v) => { store.n2Options.scope = v; }
+});
+const useVirtualBuses = computed({
+  get: () => store.n2Options.useVirtualBuses,
+  set: (v) => { store.n2Options.useVirtualBuses = v; }
+});
+const activeGroups = computed(() => new Set(store.activeGroups));
 
 const hoveredCell = ref({ row: -1, col: -1 });
 const selectedCell = ref(null);
@@ -114,16 +99,9 @@ const handleGroupReorder = (srcGroup, targetGroup) => {
   selectedCell.value = null;
 };
 
-// Group visibility toggle
+// Group visibility toggle (shared with 3D Space via graphStore)
 const toggleGroup = (g) => {
-  const next = new Set(activeGroups.value);
-  if (next.has(g)) {
-    const currentlyVisible = visibleGroupPills.value.filter((x) => next.has(x));
-    if (currentlyVisible.length > 1) next.delete(g);
-  } else {
-    next.add(g);
-  }
-  activeGroups.value = next;
+  toggleGlobalGroupVisibility(g, visibleGroupPills.value);
   selectedCell.value = null;
 };
 

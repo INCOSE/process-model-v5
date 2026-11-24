@@ -24,13 +24,18 @@ export const store = reactive({
     includeSituational: false
   },
 
-  // Shared group order for N2 Matrix and 3D Process Group planes (top -> bottom)
+  // Global UI layout state (persisted in Share Link)
+  isSidebarCollapsed: false,
+
+  // Shared group order & visibility for N2 Matrix and 3D Process Group planes (top -> bottom)
   groupOrder: [...HANDBOOK_GROUP_ORDER],
+  activeGroups: [...HANDBOOK_GROUP_ORDER],
   useHandbookOrder: true,
 
   // Top-level projection / workspace view:
   // Visual projections: 'graph' (2D Diagram) | 'space3d' (3D Space) | 'n2' (N2 Matrix)
   // Reference views:    'checklist' | 'hotspots' | 'dictionary'
+  // Guided tours:       'tours'
   activeView: 'graph',
 
   // 2D diagram renderer (used inside 'graph' view): 'mermaid' | 'visjs'
@@ -38,9 +43,10 @@ export const store = reactive({
 
   // 2D Vis.js display preferences
   visOptions: {
-    scope: 'slice',                    // 'slice' | 'context' | 'full'
-    useRings: false,                   // Concentric Process Group circles (Onion layout)
-    ringOrder: [...DEFAULT_RING_ORDER] // Inner -> Outer ring order (Tailoring excluded)
+    scope: 'slice',                          // 'slice' | 'context' | 'full'
+    useRings: false,                         // Concentric Process Group circles (Onion layout)
+    ringOrder: [...DEFAULT_RING_ORDER],      // Inner -> Outer ring order (Tailoring excluded)
+    activeRingGroups: [...DEFAULT_RING_ORDER]
   },
 
   // Unified 3D Space display preferences
@@ -48,6 +54,21 @@ export const store = reactive({
     scope: 'full',       // 'slice' | 'context' | 'full'
     showLabels: false,
     isLayered: true
+  },
+
+  // N2 Matrix display preferences
+  n2Options: {
+    scope: 'full',           // 'full' | 'diagram'
+    useVirtualBuses: false
+  },
+
+  // Guided Tours playback & display preferences
+  tourOptions: {
+    tourId: 'vv_loops',
+    engine: '3d',        // '3d' | 'visjs' | 'mermaid'
+    showCaptions: true,
+    showLabels3D: true,
+    currentTime: 0
   },
 
   // Selected process in Process Checklist view
@@ -115,6 +136,34 @@ export function reorderVisRingGroup(srcGroup, targetGroup) {
 
 export function resetVisRingOrder() {
   store.visOptions.ringOrder = [...DEFAULT_RING_ORDER];
+}
+
+/**
+ * Toggles visibility of a group in the shared N2 / 3D activeGroups list.
+ */
+export function toggleGlobalGroupVisibility(g, presentGroupsList) {
+  const next = new Set(store.activeGroups);
+  if (next.has(g)) {
+    const currentlyVisible = presentGroupsList.filter((x) => next.has(x));
+    if (currentlyVisible.length > 1) next.delete(g);
+  } else {
+    next.add(g);
+  }
+  store.activeGroups = Array.from(next);
+}
+
+/**
+ * Toggles visibility of a ring group in 2D Vis.js concentric rings.
+ */
+export function toggleVisRingGroupVisibility(g, presentRingList) {
+  const next = new Set(store.visOptions.activeRingGroups);
+  if (next.has(g)) {
+    const currentlyVisible = presentRingList.filter((x) => next.has(x));
+    if (currentlyVisible.length > 1) next.delete(g);
+  } else {
+    next.add(g);
+  }
+  store.visOptions.activeRingGroups = Array.from(next);
 }
 
 /**

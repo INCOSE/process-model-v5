@@ -4,7 +4,7 @@ import mermaid from 'mermaid';
 import svgPanZoom from 'svg-pan-zoom';
 import { Network } from 'vis-network';
 
-import { store, graphData, applyModelXml, reorderVisRingGroup, resetVisRingOrder } from '../store/graphStore.js';
+import { store, graphData, applyModelXml, reorderVisRingGroup, resetVisRingOrder, toggleVisRingGroupVisibility } from '../store/graphStore.js';
 import { graphToMermaidAndData } from '../renderers/mermaidGenerator.js';
 import { getProcessGroup, getProcessOrderIndex, groupColors, groupFullLabels, DEFAULT_RING_ORDER } from '../core/iso15288Groups.js';
 import GroupOrderBar from './GroupOrderBar.vue';
@@ -108,17 +108,10 @@ const RING_STYLES = {
 };
 
 const presentRingGroups = ref([]);
-const activeVisRingGroups = ref(new Set(DEFAULT_RING_ORDER));
+const activeVisRingGroups = computed(() => new Set(store.visOptions.activeRingGroups));
 
 const toggleVisRingGroup = (g) => {
-    const next = new Set(activeVisRingGroups.value);
-    if (next.has(g)) {
-        const currentlyVisible = presentRingGroups.value.filter((x) => next.has(x));
-        if (currentlyVisible.length > 1) next.delete(g);
-    } else {
-        next.add(g);
-    }
-    activeVisRingGroups.value = next;
+    toggleVisRingGroupVisibility(g, presentRingGroups.value);
 };
 
 const isDefaultRingOrder = computed(() =>
@@ -1033,7 +1026,7 @@ watch(
         store.visOptions.scope,
         store.visOptions.useRings,
         store.visOptions.ringOrder,
-        activeVisRingGroups,
+        store.visOptions.activeRingGroups,
         store.settings.useHierarchy,
         store.settings.includeEnables,
         store.settings.includeControls,

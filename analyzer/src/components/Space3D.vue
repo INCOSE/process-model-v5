@@ -3,7 +3,7 @@ import { ref, computed, watch, nextTick, onMounted, onUnmounted } from 'vue';
 import ForceGraph3D from '3d-force-graph';
 import * as THREE from 'three';
 
-import { store, graphData, reorderGlobalGroup, setHandbookOrder } from '../store/graphStore.js';
+import { store, graphData, reorderGlobalGroup, setHandbookOrder, toggleGlobalGroupVisibility } from '../store/graphStore.js';
 import { getProcessGroup, buildDynamicLayerY, groupColors, HANDBOOK_GROUP_ORDER } from '../core/iso15288Groups.js';
 import GroupOrderBar from './GroupOrderBar.vue';
 import { buildFlowSteps } from '../core/flowStepper.js';
@@ -39,18 +39,11 @@ let currentPlaneSize = 680;
 const hasSlice = computed(() => store.renderPayload && store.renderPayload.nodes.size > 0);
 
 const presentGroupsInScene = ref([]);
-const activeGroups = ref(new Set(HANDBOOK_GROUP_ORDER));
+const activeGroups = computed(() => new Set(store.activeGroups));
 const dynamicLayerYMap = computed(() => buildDynamicLayerY(store.groupOrder, 82));
 
 const toggleGroupVisibility = (g) => {
-    const next = new Set(activeGroups.value);
-    if (next.has(g)) {
-        const currentlyVisible = presentGroupsInScene.value.filter((x) => next.has(x));
-        if (currentlyVisible.length > 1) next.delete(g);
-    } else {
-        next.add(g);
-    }
-    activeGroups.value = next;
+    toggleGlobalGroupVisibility(g, presentGroupsInScene.value);
 };
 const effectiveScope = computed(() => {
     if (!hasSlice.value) return 'full';
@@ -780,7 +773,7 @@ watch(
         store.threeOptions.showLabels,
         store.threeOptions.isLayered,
         store.groupOrder,
-        activeGroups
+        store.activeGroups
     ],
     async () => {
         stopAutoPlay();
