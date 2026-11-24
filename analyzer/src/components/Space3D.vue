@@ -3,8 +3,9 @@ import { ref, computed, watch, nextTick, onMounted, onUnmounted } from 'vue';
 import ForceGraph3D from '3d-force-graph';
 import * as THREE from 'three';
 
-import { store, graphData } from '../store/graphStore.js';
-import { getProcessGroup, groupLayerY, groupColors } from '../core/iso15288Groups.js';
+import { store, graphData, reorderGlobalGroup, setHandbookOrder } from '../store/graphStore.js';
+import { getProcessGroup, buildDynamicLayerY, groupColors } from '../core/iso15288Groups.js';
+import GroupOrderBar from './GroupOrderBar.vue';
 import { buildFlowSteps } from '../core/flowStepper.js';
 
 const wrapperRef = ref(null);
@@ -36,6 +37,9 @@ let resizeRaf = null;
 let currentPlaneSize = 680;
 
 const hasSlice = computed(() => store.renderPayload && store.renderPayload.nodes.size > 0);
+
+const presentGroupsInScene = ref([]);
+const dynamicLayerYMap = computed(() => buildDynamicLayerY(store.groupOrder, 82));
 const effectiveScope = computed(() => {
     if (!hasSlice.value) return 'full';
     return store.threeOptions.scope || 'context';
@@ -331,7 +335,7 @@ const addLayerPlanes = (nodes, planeSize) => {
 
     const activeGroups = new Set();
     nodes.forEach((n) => {
-        if (n.isProc && n.group && groupLayerY[n.group] !== undefined) {
+        if (n.isProc && n.group && dynamicLayerYMap.value[n.group] !== undefined) {
             activeGroups.add(n.group);
         }
     });
@@ -341,7 +345,7 @@ const addLayerPlanes = (nodes, planeSize) => {
     const half = planeSize / 2;
 
     activeGroups.forEach((groupName) => {
-        const y = groupLayerY[groupName];
+        const y = dynamicLayerYMap.value[groupName];
         const colorHex = groupColors[groupName] || '#546e7a';
         const threeColor = new THREE.Color(colorHex);
 
@@ -517,7 +521,7 @@ const render3D = () => {
         };
 
         if (layered && isProc) {
-            nodeObj.fy = groupLayerY[group] ?? -170;
+            nodeObj.fy = dynamicLayerYMap.value[group] ?? -170;
         }
 
         nodes.push(nodeObj);
@@ -607,6 +611,8 @@ const render3D = () => {
         });
     }
 
+    const presentSet = new Set(nodes.filter((n) => n.isProc).map((n) => n.group));
+    presentGroupsInScene.value = store.groupOrder.filter((g) => presentSet.has(g));
     renderedNodeIds.value = Array.from(includedIds);
     stats.value = { processes: procCount, objects: objCount, links: links.length };
 
@@ -738,7 +744,8 @@ watch(
         store.settings.includeSituational,
         store.threeOptions.scope,
         store.threeOptions.showLabels,
-        store.threeOptions.isLayered
+        store.threeOptions.isLayered,
+        store.groupOrder
     ],
     async () => {
         stopAutoPlay();
@@ -873,6 +880,24 @@ onUnmounted(() => {
       <span class="model-stats-pill">
         {{ stats.processes }}p · {{ stats.objects }}a · {{ stats.links }}l
       </span>
+    </div>
+
+    <!-- Floating Draggable Process Group Plane Order Bar -->
+    <div v-if="store.threeOptions.isLayered && presentGroupsInScene.length > 1" class="layer-order-strip">
+      <GroupOrderBar
+        :groups="presentGroupsInScene"
+        prefix-label="Top → Bottom:"
+        @reorder="reorderGlobalGroup"
+      />
+      <button
+        v-if="!store.useHandbookOrder"
+        type="button"
+        class="reset-order-btn"
+        @click="setHandbookOrder(true)"
+        title="Restore INCOSE Handbook group order"
+      >
+        ↺ Handbook
+      </button>
     </div>
 
     <!-- Step-by-Step Flow Player Bar -->
@@ -1062,6 +1087,22 @@ onUnmounted(() => {
   font-size: 12px; font-weight: 500; color: #333;
   cursor: pointer; user-select: none; padding-left: 4px;
 }
+.layer-order-strip {
+  position: absolute; top: 62px; left: 16px; z-index: 95;
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
+  max-width: calc(100% - 32px);
+  background: rgba(255, 255, 255, 0.92);
+  border: 1px solid #d0d7de; border-radius: 8px;
+  padding: 5px 10px; box-shadow: 0 2px 6px rgba(0, 0, 0, 0.06);
+  backdrop-filter: blur(4px);
+}
+.reset-order-btn {
+  border: 1px solid #cbd5e1; background: #f8fafc; color: #334155;
+  border-radius: 12px; padding: 2px 8px; font-size: 11px; font-weight: 600;
+  cursor: pointer;
+}
+.reset-order-btn:hover { background: #e2e8f0; }
+
 .model-stats-pill {
   font-size: 11px; color: #64748b; font-weight: 600;
   padding: 3px 8px; border-radius: 10px; background: #f1f5f9;

@@ -4,9 +4,10 @@ import mermaid from 'mermaid';
 import svgPanZoom from 'svg-pan-zoom';
 import { Network } from 'vis-network';
 
-import { store, graphData, applyModelXml } from '../store/graphStore.js';
+import { store, graphData, applyModelXml, reorderVisRingGroup, resetVisRingOrder } from '../store/graphStore.js';
 import { graphToMermaidAndData } from '../renderers/mermaidGenerator.js';
-import { getProcessGroup, getProcessOrderIndex, groupColors } from '../core/iso15288Groups.js';
+import { getProcessGroup, getProcessOrderIndex, groupColors, groupFullLabels, DEFAULT_RING_ORDER } from '../core/iso15288Groups.js';
+import GroupOrderBar from './GroupOrderBar.vue';
 import { buildFlowSteps } from '../core/flowStepper.js';
 import N2Matrix from './N2Matrix.vue';
 import InsightsView from './InsightsView.vue';
@@ -94,15 +95,32 @@ let visBaseEdges = [];
 let resizeObserver = null;
 let resizeRaf = null;
 
-// Concentric ring geometry for 2D Vis.js "Process Groups" (Onion) layout
+// Dynamic concentric ring radii (Inner -> Outer) driven by store.visOptions.ringOrder
 // Tailoring is intentionally excluded from the concentric rings.
-const ONION_RING_GROUPS = [
-    { group: 'Technical', label: 'Technical Processes', radius: 340, fill: 'rgba(46, 125, 50, 0.045)', stroke: 'rgba(46, 125, 50, 0.38)' },
-    { group: 'Technical Management', label: 'Technical Management', radius: 640, fill: 'rgba(21, 101, 192, 0.035)', stroke: 'rgba(21, 101, 192, 0.34)' },
-    { group: 'Organizational Project-Enabling', label: 'Organisational Project-Enabling', radius: 920, fill: 'rgba(106, 27, 154, 0.03)', stroke: 'rgba(106, 27, 154, 0.30)' },
-    { group: 'Agreement', label: 'Agreement', radius: 1160, fill: 'rgba(198, 40, 40, 0.025)', stroke: 'rgba(198, 40, 40, 0.28)' },
-    { group: 'External', label: 'External Boundary', radius: 1380, fill: 'rgba(55, 71, 79, 0.02)', stroke: 'rgba(55, 71, 79, 0.32)' }
-];
+const RING_RADII = [340, 640, 920, 1160, 1380];
+const RING_STYLES = {
+    'Technical': { fill: 'rgba(46, 125, 50, 0.045)', stroke: 'rgba(46, 125, 50, 0.38)' },
+    'Technical Management': { fill: 'rgba(21, 101, 192, 0.035)', stroke: 'rgba(21, 101, 192, 0.34)' },
+    'Organizational Project-Enabling': { fill: 'rgba(106, 27, 154, 0.03)', stroke: 'rgba(106, 27, 154, 0.30)' },
+    'Agreement': { fill: 'rgba(198, 40, 40, 0.025)', stroke: 'rgba(198, 40, 40, 0.28)' },
+    'External': { fill: 'rgba(55, 71, 79, 0.02)', stroke: 'rgba(55, 71, 79, 0.32)' }
+};
+
+const presentRingGroups = ref([]);
+
+const isDefaultRingOrder = computed(() =>
+    store.visOptions.ringOrder.every((g, i) => g === DEFAULT_RING_ORDER[i])
+);
+
+const buildActiveRingSpecs = () => {
+    return store.visOptions.ringOrder.map((group, idx) => ({
+        group,
+        label: groupFullLabels[group] || group,
+        radius: RING_RADII[idx] || (340 + idx * 260),
+        fill: RING_STYLES[group]?.fill || 'rgba(84, 110, 122, 0.025)',
+        stroke: RING_STYLES[group]?.stroke || 'rgba(84, 110, 122, 0.32)'
+    }));
+};
 
 mermaid.initialize({
     startOnLoad: false,
@@ -516,9 +534,10 @@ const applyVisVisualState = () => {
 };
 
 // --- 2D CONCENTRIC RING POSITIONING (ONION LAYOUT) ---
-const computeOnionPositions = (nodesList, edgesList) => {
+const computeOnionPositions = (nodesList, edgesList, ringSpecs) => {
     const ringRadiusByGroup = {};
-    ONION_RING_GROUPS.forEach((r) => { ringRadiusByGroup[r.group] = r.radius; });
+    ringSpecs.forEach((r) => { ringRadiusByGroup[r.group] = r.radius; });
+    const innermostRadius = ringSpecs[0]?.radius || 340;
 
     const procsByGroup = {};
     const artefacts = [];
@@ -538,7 +557,7 @@ const computeOnionPositions = (nodesList, edgesList) => {
     const radiusById = new Map();
 
     // 1. Place processes evenly around their Process Group circle in ISO 15288 order
-    ONION_RING_GROUPS.forEach((ring, ringIdx) => {
+    ringSpecs.forEach((ring, ringIdx) => {
         const list = procsByGroup[ring.group] || [];
         if (list.length === 0) return;
 
@@ -594,7 +613,7 @@ const computeOnionPositions = (nodesList, edgesList) => {
             if (uniqueRadii.length === 1) {
                 // Connected only to one process group:
                 // Technical-only artefacts go INSIDE the core circle!
-                if (minR === ringRadiusByGroup['Technical']) {
+                if (minR === innermostRadius) {
                     targetRadius = 155;
                 } else {
                     targetRadius = minR - 115;
@@ -855,9 +874,10 @@ const renderVisJs = (payload) => {
     }
 
     // Apply deterministic concentric coordinates when Process Groups (Rings) is enabled
+    const ringSpecs = buildActiveRingSpecs();
     const activeRingGroups = new Set();
     if (useRings) {
-        const positions = computeOnionPositions(rawNodes, rawEdges);
+        const positions = computeOnionPositions(rawNodes, rawEdges, ringSpecs);
         rawNodes.forEach((n) => {
             const p = positions.get(n.id);
             if (p) {
@@ -871,6 +891,7 @@ const renderVisJs = (payload) => {
     visBaseNodes = rawNodes;
     visBaseEdges = rawEdges;
     rendered2DNodeIds.value = Array.from(includedIds);
+    presentRingGroups.value = store.visOptions.ringOrder.filter((g) => activeRingGroups.has(g));
 
     visNetworkInstance = new Network(
         visDiv.value,
@@ -905,7 +926,7 @@ const renderVisJs = (payload) => {
 
     // Draw concentric Process Group rings on the Vis.js background canvas
     if (useRings) {
-        const ringsToDraw = ONION_RING_GROUPS.filter((r) => activeRingGroups.has(r.group));
+        const ringsToDraw = ringSpecs.filter((r) => activeRingGroups.has(r.group));
         visNetworkInstance.on('beforeDrawing', (ctx) => {
             // Draw from outermost to innermost so subtle fills layer cleanly
             [...ringsToDraw].reverse().forEach((ring) => {
@@ -978,6 +999,7 @@ watch(
         store.activeView,
         store.visOptions.scope,
         store.visOptions.useRings,
+        store.visOptions.ringOrder,
         store.settings.useHierarchy,
         store.settings.includeEnables,
         store.settings.includeControls,
@@ -1260,11 +1282,32 @@ onUnmounted(() => {
           <label
             v-if="store.activeEngine === 'visjs'"
             class="toolbar-toggle"
-            title="Arrange ISO 15288 Process Groups on concentric rings (Technical at centre, External on outer ring; Tailoring excluded)"
+            title="Arrange ISO 15288 Process Groups on concentric rings (drag pills below to reorder; Tailoring excluded)"
           >
               <input type="checkbox" v-model="store.visOptions.useRings" />
               Process Groups (Rings)
           </label>
+      </div>
+
+      <!-- Floating Draggable Ring Order Bar (Vis.js Concentric Rings) -->
+      <div
+        v-if="store.activeEngine === 'visjs' && store.visOptions.useRings && presentRingGroups.length > 1"
+        class="ring-order-strip"
+      >
+          <GroupOrderBar
+            :groups="presentRingGroups"
+            prefix-label="Inner → Outer:"
+            @reorder="reorderVisRingGroup"
+          />
+          <button
+            v-if="!isDefaultRingOrder"
+            type="button"
+            class="reset-order-btn"
+            @click="resetVisRingOrder"
+            title="Reset rings to default (Technical at centre → External outside)"
+          >
+            ↺ Reset
+          </button>
       </div>
 
       <!-- Step-by-Step Flow Player Bar -->
@@ -1472,6 +1515,22 @@ onUnmounted(() => {
     font-size: 12px; font-weight: 500; color: #333;
     cursor: pointer; user-select: none; padding-left: 4px;
 }
+
+.ring-order-strip {
+    position: absolute; top: 62px; left: 16px; z-index: 95;
+    display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
+    max-width: calc(100% - 32px);
+    background: rgba(255, 255, 255, 0.92);
+    border: 1px solid #d0d7de; border-radius: 8px;
+    padding: 5px 10px; box-shadow: 0 2px 6px rgba(0, 0, 0, 0.06);
+    backdrop-filter: blur(4px);
+}
+.reset-order-btn {
+    border: 1px solid #cbd5e1; background: #f8fafc; color: #334155;
+    border-radius: 12px; padding: 2px 8px; font-size: 11px; font-weight: 600;
+    cursor: pointer;
+}
+.reset-order-btn:hover { background: #e2e8f0; }
 
 /* In-Canvas Search Box */
 .toolbar-search-box {

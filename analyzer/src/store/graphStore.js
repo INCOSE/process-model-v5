@@ -1,6 +1,11 @@
 import { reactive, watch } from 'vue';
 import { loadAndParseXML } from '../core/xmlParser.js';
 import { CaseRegistry } from '../cases/caseRegistry.js';
+import {
+  HANDBOOK_GROUP_ORDER,
+  TECHNICAL_FIRST_GROUP_ORDER,
+  DEFAULT_RING_ORDER
+} from '../core/iso15288Groups.js';
 
 export const store = reactive({
   isLoaded: false,
@@ -19,6 +24,10 @@ export const store = reactive({
     includeSituational: false
   },
 
+  // Shared group order for N2 Matrix and 3D Process Group planes (top -> bottom)
+  groupOrder: [...HANDBOOK_GROUP_ORDER],
+  useHandbookOrder: true,
+
   // Top-level projection / workspace view:
   // Visual projections: 'graph' (2D Diagram) | 'space3d' (3D Space) | 'n2' (N2 Matrix)
   // Reference views:    'checklist' | 'hotspots' | 'dictionary'
@@ -29,8 +38,9 @@ export const store = reactive({
 
   // 2D Vis.js display preferences
   visOptions: {
-    scope: 'slice',      // 'slice' | 'context' | 'full'
-    useRings: false      // Concentric Process Group circles (Onion layout)
+    scope: 'slice',                    // 'slice' | 'context' | 'full'
+    useRings: false,                   // Concentric Process Group circles (Onion layout)
+    ringOrder: [...DEFAULT_RING_ORDER] // Inner -> Outer ring order (Tailoring excluded)
   },
 
   // Unified 3D Space display preferences
@@ -67,6 +77,47 @@ export const graphData = {
 };
 
 /**
+ * Reorders a group inside the shared top-to-bottom groupOrder (N2 & 3D planes).
+ */
+export function reorderGlobalGroup(srcGroup, targetGroup) {
+  const list = [...store.groupOrder];
+  const fromIdx = list.indexOf(srcGroup);
+  const toIdx = list.indexOf(targetGroup);
+  if (fromIdx === -1 || toIdx === -1 || fromIdx === toIdx) return;
+
+  list.splice(fromIdx, 1);
+  list.splice(toIdx, 0, srcGroup);
+  store.groupOrder = list;
+  store.useHandbookOrder = list.every((g, i) => g === HANDBOOK_GROUP_ORDER[i]);
+}
+
+/**
+ * Toggles between Handbook order and Technical-first order for N2 & 3D planes.
+ */
+export function setHandbookOrder(enabled) {
+  store.useHandbookOrder = enabled;
+  store.groupOrder = enabled ? [...HANDBOOK_GROUP_ORDER] : [...TECHNICAL_FIRST_GROUP_ORDER];
+}
+
+/**
+ * Reorders a group inside the 2D Vis.js concentric rings (inner -> outer).
+ */
+export function reorderVisRingGroup(srcGroup, targetGroup) {
+  const list = [...store.visOptions.ringOrder];
+  const fromIdx = list.indexOf(srcGroup);
+  const toIdx = list.indexOf(targetGroup);
+  if (fromIdx === -1 || toIdx === -1 || fromIdx === toIdx) return;
+
+  list.splice(fromIdx, 1);
+  list.splice(toIdx, 0, srcGroup);
+  store.visOptions.ringOrder = list;
+}
+
+export function resetVisRingOrder() {
+  store.visOptions.ringOrder = [...DEFAULT_RING_ORDER];
+}
+
+/**
  * Populates default values for a case's input schema.
  */
 export function getCaseDefaults(caseId) {
@@ -82,8 +133,6 @@ export function getCaseDefaults(caseId) {
 
 /**
  * Executes the currently selected case and updates renderPayload.
- * Keeps the user on 2D Diagram, 3D Space, or N2 Matrix if already viewing one;
- * switches to 2D Diagram if currently on a reference tab.
  */
 export function executeActiveCase(autoSwitchView = true) {
   if (!store.isLoaded) return false;

@@ -1,6 +1,6 @@
 /**
  * Shared ISO/IEC/IEEE 15288 process classification mapping and display metadata.
- * Used across Sidebar dropdowns, 3D layered layouts, and N2/DSM matrices.
+ * Used across Sidebar dropdowns, 3D layered layouts, 2D concentric rings, and N2/DSM matrices.
  */
 
 export const iso15288Mapping = {
@@ -51,6 +51,35 @@ export const iso15288Mapping = {
 
 export const isoProcessOrder = Object.keys(iso15288Mapping);
 
+export const HANDBOOK_GROUP_ORDER = [
+  'External',
+  'Agreement',
+  'Organizational Project-Enabling',
+  'Technical Management',
+  'Technical',
+  'Tailoring',
+  'Others'
+];
+
+export const TECHNICAL_FIRST_GROUP_ORDER = [
+  'Technical',
+  'Technical Management',
+  'Organizational Project-Enabling',
+  'Agreement',
+  'Tailoring',
+  'External',
+  'Others'
+];
+
+// Default inner-to-outer order for 2D concentric rings (Tailoring excluded)
+export const DEFAULT_RING_ORDER = [
+  'Technical',
+  'Technical Management',
+  'Organizational Project-Enabling',
+  'Agreement',
+  'External'
+];
+
 export const groupOrder = [
   'Technical',
   'Technical Management',
@@ -72,6 +101,16 @@ export const groupShortLabels = {
   'Others': 'Other'
 };
 
+export const groupFullLabels = {
+  'Technical': 'Technical Processes',
+  'Technical Management': 'Technical Management',
+  'Organizational Project-Enabling': 'Organisational Project-Enabling',
+  'Agreement': 'Agreement',
+  'Tailoring': 'Tailoring',
+  'External': 'External Boundary',
+  'Others': 'Others'
+};
+
 export const groupColors = {
   'Technical': '#2e7d32',
   'Technical Management': '#1565c0',
@@ -82,7 +121,7 @@ export const groupColors = {
   'Others': '#546e7a'
 };
 
-// Vertical Y-axis coordinates for the layered 3D layout
+// Static fallback Y-axis coordinates
 export const groupLayerY = {
   'External': 210,
   'Agreement': 135,
@@ -90,8 +129,21 @@ export const groupLayerY = {
   'Technical Management': -15,
   'Technical': -95,
   'Tailoring': -170,
-  'Others': -170
+  'Others': -230
 };
+
+/**
+ * Computes evenly spaced Y-axis heights (top to bottom) for a custom group order.
+ */
+export function buildDynamicLayerY(orderedGroups, spacing = 82) {
+  const map = {};
+  const count = orderedGroups.length;
+  const topY = ((count - 1) * spacing) / 2;
+  orderedGroups.forEach((g, idx) => {
+    map[g] = Math.round(topY - idx * spacing);
+  });
+  return map;
+}
 
 export function getProcessGroup(name) {
   return iso15288Mapping[name] || 'Others';

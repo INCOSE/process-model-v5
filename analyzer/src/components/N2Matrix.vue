@@ -1,6 +1,7 @@
 <script setup>
 import { ref, computed, watch } from 'vue';
-import { store, graphData } from '../store/graphStore.js';
+import { store, graphData, reorderGlobalGroup, setHandbookOrder } from '../store/graphStore.js';
+import GroupOrderBar from './GroupOrderBar.vue';
 import {
   groupShortLabels,
   groupColors,
@@ -33,8 +34,7 @@ const DEFAULT_GROUP_ORDER = [
 const scope = ref(store.renderPayload.nodes.size > 0 ? 'diagram' : 'full');
 
 // Dynamic user-reorderable group order
-const customGroupOrder = ref([...HANDBOOK_GROUP_ORDER]);
-const useHandbookOrder = ref(true);
+// Shared with 3D Space via store.groupOrder & store.useHandbookOrder
 
 // Virtual Buses toggle (CTL / ENAB / SIT)
 const useVirtualBuses = ref(false);
@@ -77,7 +77,7 @@ const isStandardIsoModel = computed(() => {
 });
 
 const visibleGroupPills = computed(() => {
-  return customGroupOrder.value.filter((g) => presentGroupsSet.value.has(g));
+  return store.groupOrder.filter((g) => presentGroupsSet.value.has(g));
 });
 
 // Check whether any Meta-Level Inheritance flag is enabled in Global Model Settings
@@ -105,12 +105,12 @@ watch(
 
 // Handbook order checkbox handler
 const toggleHandbookOrder = (checked) => {
-  useHandbookOrder.value = checked;
-  if (checked) {
-    customGroupOrder.value = [...HANDBOOK_GROUP_ORDER];
-  } else {
-    customGroupOrder.value = [...DEFAULT_GROUP_ORDER];
-  }
+  setHandbookOrder(checked);
+  selectedCell.value = null;
+};
+
+const handleGroupReorder = (srcGroup, targetGroup) => {
+  reorderGlobalGroup(srcGroup, targetGroup);
   selectedCell.value = null;
 };
 
@@ -238,7 +238,7 @@ const matrixProcesses = computed(() => {
     candidateIds = Object.keys(store.processes);
   }
 
-  const orderArr = customGroupOrder.value;
+  const orderArr = store.groupOrder;
 
   const realProcs = candidateIds
     .map((id) => {
@@ -550,33 +550,14 @@ const exportCsv = () => {
           </button>
         </div>
 
-        <!-- Reorderable & Toggleable Group Pills -->
-        <div v-if="scope === 'full' && visibleGroupPills.length > 0" class="group-filters">
-          <button
-            v-for="g in visibleGroupPills"
-            :key="g"
-            draggable="true"
-            :class="[
-              'group-pill',
-              {
-                active: activeGroups.has(g),
-                dragging: draggedGroup === g,
-                'drag-over': dragOverGroup === g
-              }
-            ]"
-            :style="activeGroups.has(g) ? { borderColor: groupColors[g], color: groupColors[g], background: '#ffffff' } : {}"
-            @click="toggleGroup(g)"
-            @dragstart="onDragStart(g, $event)"
-            @dragover="onDragOver(g, $event)"
-            @dragleave="onDragLeave(g)"
-            @drop="onDrop(g, $event)"
-            @dragend="onDragEnd"
-            title="Click to toggle visibility · Drag left/right to reorder groups in the matrix"
-          >
-            <span class="dot" :style="{ background: groupColors[g] }"></span>
-            {{ groupShortLabels[g] || g }}
-          </button>
-        </div>
+        <!-- Reorderable & Toggleable Group Pills (Synced with 3D Space) -->
+        <GroupOrderBar
+          v-if="scope === 'full' && visibleGroupPills.length > 0"
+          :groups="visibleGroupPills"
+          :active-groups="activeGroups"
+          @toggle="toggleGroup"
+          @reorder="handleGroupReorder"
+        />
 
         <span v-if="isStandardIsoModel" class="toolbar-divider" aria-hidden="true"></span>
 
@@ -588,7 +569,7 @@ const exportCsv = () => {
         >
           <input
             type="checkbox"
-            :checked="useHandbookOrder"
+            :checked="store.useHandbookOrder"
             @change="toggleHandbookOrder($event.target.checked)"
           />
           Handbook order
