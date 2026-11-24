@@ -4,7 +4,7 @@ import ForceGraph3D from '3d-force-graph';
 import * as THREE from 'three';
 
 import { store, graphData, reorderGlobalGroup, setHandbookOrder } from '../store/graphStore.js';
-import { getProcessGroup, buildDynamicLayerY, groupColors } from '../core/iso15288Groups.js';
+import { getProcessGroup, buildDynamicLayerY, groupColors, HANDBOOK_GROUP_ORDER } from '../core/iso15288Groups.js';
 import GroupOrderBar from './GroupOrderBar.vue';
 import { buildFlowSteps } from '../core/flowStepper.js';
 
@@ -39,7 +39,19 @@ let currentPlaneSize = 680;
 const hasSlice = computed(() => store.renderPayload && store.renderPayload.nodes.size > 0);
 
 const presentGroupsInScene = ref([]);
+const activeGroups = ref(new Set(HANDBOOK_GROUP_ORDER));
 const dynamicLayerYMap = computed(() => buildDynamicLayerY(store.groupOrder, 82));
+
+const toggleGroupVisibility = (g) => {
+    const next = new Set(activeGroups.value);
+    if (next.has(g)) {
+        const currentlyVisible = presentGroupsInScene.value.filter((x) => next.has(x));
+        if (currentlyVisible.length > 1) next.delete(g);
+    } else {
+        next.add(g);
+    }
+    activeGroups.value = next;
+};
 const effectiveScope = computed(() => {
     if (!hasSlice.value) return 'full';
     return store.threeOptions.scope || 'context';
@@ -489,6 +501,8 @@ const render3D = () => {
     let procCount = 0;
     let objCount = 0;
 
+    const allPresentProcessGroups = new Set();
+
     const addNode = (id) => {
         if (!gActive.hasNode(id) || includedIds.has(id)) return;
         const type = gActive.getNodeAttribute(id, 'type') || '';
@@ -499,6 +513,11 @@ const render3D = () => {
         const isHighlighted = mode !== 'full' && payload.highlightedNodes && payload.highlightedNodes.has(id);
         const name = (inSlice && payload.customLabels?.[id]) || gActive.getNodeAttribute(id, 'name') || 'Unknown';
         const group = isProc ? getProcessGroup(name) : 'Business Objects';
+
+        if (isProc) {
+            allPresentProcessGroups.add(group);
+            if (layered && !activeGroups.value.has(group)) return;
+        }
 
         if (isProc) procCount++;
         else objCount++;
@@ -575,6 +594,22 @@ const render3D = () => {
         gActive.forEachEdge((edge, attr, source, target) => pushLink(source, target, attr));
     }
 
+    // Prune artefacts that have no links left after hiding process groups
+    if (layered && activeGroups.value.size < allPresentProcessGroups.size) {
+        const connectedIds = new Set();
+        links.forEach((l) => {
+            connectedIds.add(l.source);
+            connectedIds.add(l.target);
+        });
+        for (let i = nodes.length - 1; i >= 0; i--) {
+            if (!nodes[i].isProc && !connectedIds.has(nodes[i].id)) {
+                includedIds.delete(nodes[i].id);
+                nodes.splice(i, 1);
+                objCount--;
+            }
+        }
+    }
+
     // Deterministic vertical placement for artefacts between their connected Process Group planes
     const nodeById = new Map(nodes.map((n) => [n.id, n]));
     if (layered) {
@@ -611,8 +646,7 @@ const render3D = () => {
         });
     }
 
-    const presentSet = new Set(nodes.filter((n) => n.isProc).map((n) => n.group));
-    presentGroupsInScene.value = store.groupOrder.filter((g) => presentSet.has(g));
+    presentGroupsInScene.value = store.groupOrder.filter((g) => allPresentProcessGroups.has(g));
     renderedNodeIds.value = Array.from(includedIds);
     stats.value = { processes: procCount, objects: objCount, links: links.length };
 
@@ -745,7 +779,8 @@ watch(
         store.threeOptions.scope,
         store.threeOptions.showLabels,
         store.threeOptions.isLayered,
-        store.groupOrder
+        store.groupOrder,
+        activeGroups
     ],
     async () => {
         stopAutoPlay();
@@ -886,7 +921,9 @@ onUnmounted(() => {
     <div v-if="store.threeOptions.isLayered && presentGroupsInScene.length > 1" class="layer-order-strip">
       <GroupOrderBar
         :groups="presentGroupsInScene"
+        :active-groups="activeGroups"
         prefix-label="Top → Bottom:"
+        @toggle="toggleGroupVisibility"
         @reorder="reorderGlobalGroup"
       />
       <button

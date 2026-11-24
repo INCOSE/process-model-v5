@@ -107,6 +107,18 @@ const RING_STYLES = {
 };
 
 const presentRingGroups = ref([]);
+const activeVisRingGroups = ref(new Set(DEFAULT_RING_ORDER));
+
+const toggleVisRingGroup = (g) => {
+    const next = new Set(activeVisRingGroups.value);
+    if (next.has(g)) {
+        const currentlyVisible = presentRingGroups.value.filter((x) => next.has(x));
+        if (currentlyVisible.length > 1) next.delete(g);
+    } else {
+        next.add(g);
+    }
+    activeVisRingGroups.value = next;
+};
 
 const isDefaultRingOrder = computed(() =>
     store.visOptions.ringOrder.every((g, i) => g === DEFAULT_RING_ORDER[i])
@@ -766,6 +778,7 @@ const renderVisJs = (payload) => {
 
     const includedIds = new Set();
     const rawNodes = [];
+    const allPresentRingGroups = new Set();
 
     candidateNodeIds.forEach((id) => {
         if (!gActive.hasNode(id) || foldedChildIds.has(id) || includedIds.has(id)) return;
@@ -777,8 +790,12 @@ const renderVisJs = (payload) => {
         const isProc = type.includes('BusinessFunction');
         const group = isProc ? getProcessGroup(rawName) : 'Business Objects';
 
-        // Exclude Tailoring when Onion Rings layout is active (per design)
-        if (useRings && isProc && group === 'Tailoring') return;
+        if (useRings && isProc) {
+            // Exclude Tailoring when Onion Rings layout is active (per design)
+            if (group === 'Tailoring') return;
+            allPresentRingGroups.add(group);
+            if (!activeVisRingGroups.value.has(group)) return;
+        }
 
         const inSlice = sliceNodes.has(id);
         const isHighlighted = mode !== 'full' && payload.highlightedNodes && payload.highlightedNodes.has(id);
@@ -873,6 +890,21 @@ const renderVisJs = (payload) => {
         gActive.forEachEdge((edge, attr, u, v) => addEdge(u, v, attr, idx++));
     }
 
+    // Prune orphaned artefacts that have no links left after hiding process groups in Rings mode
+    if (useRings && activeVisRingGroups.value.size < allPresentRingGroups.size) {
+        const connectedIds = new Set();
+        rawEdges.forEach((e) => {
+            connectedIds.add(e.from);
+            connectedIds.add(e.to);
+        });
+        for (let i = rawNodes.length - 1; i >= 0; i--) {
+            if (!rawNodes[i]._isProc && !connectedIds.has(rawNodes[i].id)) {
+                includedIds.delete(rawNodes[i].id);
+                rawNodes.splice(i, 1);
+            }
+        }
+    }
+
     // Apply deterministic concentric coordinates when Process Groups (Rings) is enabled
     const ringSpecs = buildActiveRingSpecs();
     const activeRingGroups = new Set();
@@ -891,7 +923,7 @@ const renderVisJs = (payload) => {
     visBaseNodes = rawNodes;
     visBaseEdges = rawEdges;
     rendered2DNodeIds.value = Array.from(includedIds);
-    presentRingGroups.value = store.visOptions.ringOrder.filter((g) => activeRingGroups.has(g));
+    presentRingGroups.value = store.visOptions.ringOrder.filter((g) => allPresentRingGroups.has(g));
 
     visNetworkInstance = new Network(
         visDiv.value,
@@ -1000,6 +1032,7 @@ watch(
         store.visOptions.scope,
         store.visOptions.useRings,
         store.visOptions.ringOrder,
+        activeVisRingGroups,
         store.settings.useHierarchy,
         store.settings.includeEnables,
         store.settings.includeControls,
@@ -1296,7 +1329,9 @@ onUnmounted(() => {
       >
           <GroupOrderBar
             :groups="presentRingGroups"
+            :active-groups="activeVisRingGroups"
             prefix-label="Inner → Outer:"
+            @toggle="toggleVisRingGroup"
             @reorder="reorderVisRingGroup"
           />
           <button
