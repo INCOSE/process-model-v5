@@ -376,7 +376,7 @@ const renderVisJs = () => {
     x: n.pos2d.x,
     y: n.pos2d.y,
     shape: n.role === 'spine' ? 'box' : 'ellipse',
-    widthConstraint: { maximum: 185 },
+    widthConstraint: { minimum: 170, maximum: 220 },
     color: {
       background: n.bg,
       border: n.color,
@@ -431,6 +431,8 @@ const renderVisJs = () => {
     { nodes: [...visBaseNodes], edges: [...visBaseEdges] },
     {
       physics: { enabled: false },
+      nodes: { chosen: false },
+      edges: { chosen: false },
       interaction: { hover: true }
     }
   );
@@ -483,24 +485,24 @@ const buildTourMermaidCode = () => {
     '',
     'subgraph sg_val ["VALIDATION · Do we have the right system?"]',
     '  style sg_val fill:#faf5ff,stroke:#c4b5fd,stroke-width:1.5px,color:#6d28d9;',
-    '  proc_validation(["Validation<br/>(VAL)"]) :::validation',
+    '  proc_validation(["Validation<br/>(VAL)"]):::validation',
     'end',
     '',
     'subgraph sg_spine ["TRANSFORMATION SPINE · Technical Processes"]',
     '  direction LR',
     '  style sg_spine fill:#f8fafc,stroke:#cbd5e1,stroke-width:1.5px,color:#334155;',
-    '  stage_concept["Concept &amp; Stakeholder Needs<br/>(BMA + SNRD)"] :::spine',
-    '  stage_srd["System Requirements<br/>(SRD)"] :::spine',
-    '  stage_arch["Architecture &amp; Design<br/>(SAD + DD)"] :::spine',
-    '  stage_realise["System Realisation<br/>(IMPL + INT)"] :::spine',
-    '  stage_deploy["Deployment, Use &amp; Disposal<br/>(TRAN · OPER · MAINT · DISP)"] :::spine',
+    '  stage_concept["Concept &amp; Stakeholder Needs<br/>(BMA + SNRD)"]:::spine',
+    '  stage_srd["System Requirements<br/>(SRD)"]:::spine',
+    '  stage_arch["Architecture &amp; Design<br/>(SAD + DD)"]:::spine',
+    '  stage_realise["System Realisation<br/>(IMPL + INT)"]:::spine',
+    '  stage_deploy["Deployment, Use &amp; Disposal<br/>(TRAN · OPER · MAINT · DISP)"]:::spine',
     'end',
     '',
     'subgraph sg_ver ["VERIFICATION · Are we building it right?"]',
     '  direction LR',
     '  style sg_ver fill:#f0fdfa,stroke:#99f6e4,stroke-width:1.5px,color:#0f766e;',
-    '  proc_sys_analysis(["System Analysis<br/>(SA)"]) :::analysis',
-    '  proc_verification(["Verification<br/>(VER)"]) :::verification',
+    '  proc_sys_analysis(["System Analysis<br/>(SA)"]):::analysis',
+    '  proc_verification(["Verification<br/>(VER)"]):::verification',
     'end',
     ''
   ];
