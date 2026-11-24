@@ -3,7 +3,7 @@
  * into shareable URL query parameters.
  */
 
-const VALID_VIEWS = new Set(['graph', 'space3d', 'n2', 'checklist', 'hotspots', 'dictionary']);
+const VALID_VIEWS = new Set(['graph', 'space3d', 'n2', 'checklist', 'hotspots', 'dictionary', 'tours']);
 const VALID_2D_ENGINES = new Set(['mermaid', 'visjs']);
 const VALID_SCOPES = new Set(['slice', 'context', 'full']);
 

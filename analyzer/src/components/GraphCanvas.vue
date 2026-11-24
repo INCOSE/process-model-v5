@@ -12,6 +12,7 @@ import { buildFlowSteps } from '../core/flowStepper.js';
 import N2Matrix from './N2Matrix.vue';
 import InsightsView from './InsightsView.vue';
 import Space3D from './Space3D.vue';
+import GuidedTours from './GuidedTours.vue';
 
 const stageRef = ref(null);
 const fileInput = ref(null);
@@ -1184,6 +1185,7 @@ onUnmounted(() => {
     </div>
 
     <!-- Other Projections & Reference Views -->
+    <GuidedTours v-else-if="store.activeView === 'tours'" />
     <Space3D v-else-if="store.activeView === 'space3d'" />
     <N2Matrix v-else-if="store.activeView === 'n2'" />
     <InsightsView v-else-if="['checklist', 'hotspots', 'dictionary'].includes(store.activeView)" />

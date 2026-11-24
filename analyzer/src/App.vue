@@ -18,6 +18,10 @@ const referenceTabs = [
   { id: 'dictionary', label: '🔍 Dictionary' }
 ];
 
+const tourTabs = [
+  { id: 'tours', label: '🎬 Guided Tours' }
+];
+
 const isSidebarCollapsed = ref(false);
 const isMobileMenuOpen = ref(false);
 const isMobile = ref(typeof window !== 'undefined' ? window.innerWidth <= 768 : false);
@@ -139,6 +143,19 @@ onUnmounted(() => {
               :key="tab.id"
               :class="['ws-tab', { active: store.activeView === tab.id }]"
               :disabled="!store.isLoaded"
+              @click="store.activeView = tab.id"
+            >
+              {{ tab.label }}
+            </button>
+          </div>
+
+          <span class="tab-divider" aria-hidden="true"></span>
+
+          <div class="tab-group">
+            <button
+              v-for="tab in tourTabs"
+              :key="tab.id"
+              :class="['ws-tab', { active: store.activeView === tab.id }]"
               @click="store.activeView = tab.id"
             >
               {{ tab.label }}
